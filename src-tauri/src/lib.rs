@@ -1,8 +1,4 @@
 mod config;
-mod router;
-mod downloader;
-mod analyzer;
-mod credentials;
 
 use tauri::Manager;
 
