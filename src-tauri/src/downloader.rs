@@ -117,10 +117,12 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
 
     let _ = app.emit("download:done", DonePayload {
         id: id.to_string(),
-        file_path,
+        file_path: file_path.clone(),
         track_name,
         source: "youtube".into(),
     });
+
+    crate::analyzer::analyze(app, id, &file_path).await;
 
     Ok(())
 }
@@ -142,8 +144,9 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
         .unwrap_or_default();
 
     let _ = app.emit("download:done", DonePayload {
-        id: id.to_string(), file_path, track_name, source: "spotify".into()
+        id: id.to_string(), file_path: file_path.clone(), track_name, source: "spotify".into()
     });
+    crate::analyzer::analyze(app, id, &file_path).await;
     Ok(())
 }
 
@@ -163,8 +166,9 @@ async fn run_qobuz(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
         .unwrap_or_default();
 
     let _ = app.emit("download:done", DonePayload {
-        id: id.to_string(), file_path, track_name, source: "qobuz".into()
+        id: id.to_string(), file_path: file_path.clone(), track_name, source: "qobuz".into()
     });
+    crate::analyzer::analyze(app, id, &file_path).await;
     Ok(())
 }
 

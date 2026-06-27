@@ -1,3 +1,4 @@
+mod analyzer;
 mod config;
 mod downloader;
 mod router;
