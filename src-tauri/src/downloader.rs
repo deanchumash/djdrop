@@ -12,13 +12,14 @@ pub struct DonePayload { pub id: String, pub file_path: String, pub track_name: 
 #[derive(Clone, Serialize)]
 pub struct ErrorPayload { pub id: String, pub message: String }
 
-pub fn ytdlp_args(url: &str, output_dir: &str) -> Vec<String> {
+pub fn ytdlp_args(url: &str, output_dir: &str, ffmpeg_dir: &str) -> Vec<String> {
     vec![
         "-x".into(), "--audio-format".into(), "mp3".into(),
         "--audio-quality".into(), "0".into(),
         "-P".into(), output_dir.into(),
         "--print".into(), "after_move:filepath".into(),
         "--no-playlist".into(),
+        "--ffmpeg-location".into(), ffmpeg_dir.into(),
         url.into(),
     ]
 }
@@ -76,13 +77,18 @@ pub async fn run_download(app: AppHandle, id: String, source: DownloadSource, in
 }
 
 async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Result<(), String> {
-    let args = ytdlp_args(url, output_dir);
-    let mut child = Command::new("yt-dlp")
+    let ytdlp_bin = crate::binaries::ytdlp(app)?;
+    let ffmpeg_dir = crate::binaries::ffmpeg_dir(app)?
+        .to_string_lossy()
+        .into_owned();
+    let args = ytdlp_args(url, output_dir, &ffmpeg_dir);
+
+    let mut child = Command::new(&ytdlp_bin)
         .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("yt-dlp not found: {e}"))?;
+        .map_err(|e| format!("yt-dlp not found at {:?}: {e}", ytdlp_bin))?;
 
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
@@ -142,12 +148,13 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
 }
 
 async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Result<(), String> {
+    let spotdl_bin = crate::binaries::spotdl(app)?;
     let args = spotdl_args(url, output_dir);
-    let status = Command::new("spotdl")
+    let status = Command::new(&spotdl_bin)
         .args(&args)
         .status()
         .await
-        .map_err(|e| format!("spotdl not found: {e}"))?;
+        .map_err(|e| format!("spotdl not found at {:?}: {e}", spotdl_bin))?;
 
     if !status.success() { return Err("spotdl exited with error".into()); }
 
@@ -223,13 +230,15 @@ mod tests {
 
     #[test]
     fn ytdlp_args_include_mp3_flags() {
-        let args = ytdlp_args("https://youtube.com/watch?v=x", "/tmp/out");
+        let args = ytdlp_args("https://youtube.com/watch?v=x", "/tmp/out", "/tmp/ffmpeg");
         assert!(args.contains(&"--audio-format".to_string()));
         assert!(args.contains(&"mp3".to_string()));
         assert!(args.contains(&"--audio-quality".to_string()));
         assert!(args.contains(&"0".to_string()));
         assert!(args.contains(&"-P".to_string()));
         assert!(args.contains(&"/tmp/out".to_string()));
+        assert!(args.contains(&"--ffmpeg-location".to_string()));
+        assert!(args.contains(&"/tmp/ffmpeg".to_string()));
     }
 
     #[test]
