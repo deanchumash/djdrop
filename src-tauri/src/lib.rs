@@ -1,5 +1,6 @@
 mod analyzer;
 mod config;
+mod credentials;
 mod downloader;
 mod router;
 
@@ -25,6 +26,11 @@ async fn start_download(app: tauri::AppHandle, id: String, input: String) -> Res
     Ok(())
 }
 
+#[tauri::command]
+async fn save_credential(pool: String, username: String, password: String) -> Result<(), String> {
+    credentials::store_in_keychain(&pool, &username, &password)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -35,6 +41,7 @@ pub fn run() {
             get_config,
             save_config,
             start_download,
+            save_credential,
         ])
         .run(tauri::generate_context!())
         .expect("error while running djdrop");
