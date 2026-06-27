@@ -1,3 +1,4 @@
+mod binaries;
 mod analyzer;
 mod config;
 mod credentials;
