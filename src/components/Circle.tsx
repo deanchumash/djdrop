@@ -3,9 +3,11 @@ import { useState } from 'react';
 interface Props {
   onDrop: (input: string) => void;
   progress?: number; // 0–100, undefined = idle
+  onClickBody?: () => void;
+  onClickSearch?: () => void;
 }
 
-export function Circle({ onDrop, progress }: Props) {
+export function Circle({ onDrop, progress, onClickBody, onClickSearch }: Props) {
   const [isDragOver, setIsDragOver] = useState(false);
 
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragOver(true); };
@@ -28,6 +30,7 @@ export function Circle({ onDrop, progress }: Props) {
     <div
       className={`circle${isDragOver ? ' drag-over' : ''}`}
       data-tauri-drag-region
+      onClick={onClickBody}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -40,6 +43,7 @@ export function Circle({ onDrop, progress }: Props) {
         </svg>
       ) : null}
       ↓
+      <button className="search-btn" onClick={e => { e.stopPropagation(); onClickSearch?.(); }}>🔍</button>
     </div>
   );
 }

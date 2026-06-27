@@ -1,12 +1,30 @@
 import './App.css';
+import { useState } from 'react';
 import { Circle } from './components/Circle';
+import { SearchBar } from './components/SearchBar';
+import { QueuePanel } from './components/QueuePanel';
+import { useDownloads } from './hooks/useDownloads';
 
 function App() {
-  const handleDrop = (input: string) => {
-    console.log('dropped:', input); // wired up in Task 4
-  };
+  const { downloads, activeProgress, startDownload } = useDownloads();
+  const [showSearch, setShowSearch] = useState(false);
+  const [showQueue, setShowQueue] = useState(false);
 
-  return <Circle onDrop={handleDrop} />;
+  const handleDrop = (input: string) => startDownload(input);
+  const handleSearch = (query: string) => startDownload(query);
+
+  return (
+    <div className="app-root">
+      {showQueue && <QueuePanel items={downloads} onClose={() => setShowQueue(false)} />}
+      {showSearch && <SearchBar onSearch={handleSearch} onClose={() => setShowSearch(false)} />}
+      <Circle
+        onDrop={handleDrop}
+        progress={activeProgress}
+        onClickBody={() => setShowQueue(v => !v)}
+        onClickSearch={() => setShowSearch(v => !v)}
+      />
+    </div>
+  );
 }
 
 export default App;
