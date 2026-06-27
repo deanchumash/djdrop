@@ -1,0 +1,29 @@
+html, body, #root {
+  margin: 0; padding: 0;
+  width: 72px; height: 72px;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+}
+
+.circle {
+  width: 72px; height: 72px;
+  border-radius: 50%;
+  background: #1a1a2e;
+  display: flex; align-items: center; justify-content: center;
+  color: white; font-size: 24px;
+  cursor: default;
+  transition: background 0.15s, box-shadow 0.15s;
+  position: relative;
+}
+
+.circle[data-tauri-drag-region] { cursor: move; }
+
+.circle.drag-over { box-shadow: 0 0 0 3px #4ade80; }
+
+.progress-ring {
+  position: absolute; top: 0; left: 0;
+  width: 72px; height: 72px;
+  transform: rotate(-90deg);
+  pointer-events: none;
+}

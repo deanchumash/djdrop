@@ -1,0 +1,29 @@
+[package]
+name = "djdrop"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "djdrop_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-drag = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-keyring = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tokio = { version = "1", features = ["full"] }
+keyring = "3"
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+which = "6"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
