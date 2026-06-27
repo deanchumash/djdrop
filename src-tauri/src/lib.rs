@@ -31,6 +31,11 @@ async fn save_credential(pool: String, username: String, password: String) -> Re
     credentials::store_in_keychain(&pool, &username, &password)
 }
 
+#[tauri::command]
+async fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -42,6 +47,7 @@ pub fn run() {
             save_config,
             start_download,
             save_credential,
+            quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running djdrop");

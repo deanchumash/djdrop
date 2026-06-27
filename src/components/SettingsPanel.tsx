@@ -77,6 +77,12 @@ export function SettingsPanel({ onClose }: Props) {
         );
       })}
       {saving && <span className="settings-panel__saving">Saving…</span>}
+      <button
+        className="settings-panel__quit"
+        onClick={() => invoke('quit_app')}
+      >
+        Quit djdrop
+      </button>
     </div>
   );
 }

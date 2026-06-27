@@ -61,6 +61,7 @@ html, body, #root {
 .queue-item__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-item__bpm, .queue-item__key { color: #4ade80; font-size: 11px; }
 .queue-item__status { color: #888; font-size: 11px; }
+.queue-item__start { background: none; border: none; color: #4ade80; cursor: pointer; font-size: 14px; }
 
 .search-btn {
   position: absolute; bottom: 4px; right: 4px;
@@ -93,3 +94,7 @@ html, body, #root {
 .settings-panel__section { color: #888; margin: 4px 0; }
 .settings-panel__saving { color: #4ade80; font-size: 10px; }
 hr { border-color: #333; margin: 8px 0; }
+.settings-panel__quit {
+  width: 100%; margin-top: 8px; background: #7f1d1d; border: none;
+  color: white; padding: 6px; border-radius: 4px; cursor: pointer; font-size: 12px;
+}

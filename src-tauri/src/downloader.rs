@@ -45,7 +45,21 @@ pub async fn run_download(app: AppHandle, id: String, source: DownloadSource, in
             run_spotdl(&app, &id, &input, &output_dir).await
         }
         DownloadSource::QobuzDlp => {
-            run_qobuz(&app, &id, &input, &output_dir).await
+            match crate::config::read(&app).map_err(|e| e.to_string()) {
+                Err(e) => Err(e),
+                Ok(cfg) => {
+                    let fut = crate::credentials::resolve(
+                        &cfg.pools.qobuz.username_ref,
+                        &cfg.pools.qobuz.password_ref,
+                    );
+                    match fut.await {
+                        Err(e) => Err(e),
+                        Ok((username, password)) => {
+                            run_qobuz(&app, &id, &input, &output_dir, &username, &password).await
+                        }
+                    }
+                }
+            }
         }
         DownloadSource::Pool(_) => {
             Err("pool sidecar not connected".to_string())
@@ -150,10 +164,12 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
     Ok(())
 }
 
-async fn run_qobuz(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Result<(), String> {
+async fn run_qobuz(app: &AppHandle, id: &str, url: &str, output_dir: &str, username: &str, password: &str) -> Result<(), String> {
     let args = qobuz_args(url, output_dir);
     let status = Command::new("qobuz-dlp")
         .args(&args)
+        .env("QOBUZ_EMAIL", username)
+        .env("QOBUZ_PASSWORD", password)
         .status()
         .await
         .map_err(|e| format!("qobuz-dlp not found: {e}"))?;

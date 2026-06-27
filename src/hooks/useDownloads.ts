@@ -45,5 +45,14 @@ export function useDownloads() {
     await invoke('start_download', { id, input });
   }, []);
 
-  return { downloads, activeProgress, startDownload };
+  const queueOnly = useCallback((input: string) => {
+    const id = crypto.randomUUID();
+    setDownloads(prev => [{ id, input, status: 'queued' }, ...prev]);
+  }, []);
+
+  const triggerDownload = useCallback(async (item: DownloadItem) => {
+    await invoke('start_download', { id: item.id, input: item.input });
+  }, []);
+
+  return { downloads, activeProgress, startDownload, queueOnly, triggerDownload };
 }

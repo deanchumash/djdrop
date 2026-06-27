@@ -6,9 +6,9 @@ const SOURCE_ICONS: Record<string, string> = {
   bpmsupreme: 'B', clubkillers: 'C', livedjservice: 'L',
 };
 
-interface Props { item: DownloadItem }
+interface Props { item: DownloadItem; onStart?: () => void }
 
-export function QueueItem({ item }: Props) {
+export function QueueItem({ item, onStart }: Props) {
   const handleDragStart = async (e: React.DragEvent) => {
     if (!item.file_path) return;
     e.preventDefault();
@@ -26,7 +26,10 @@ export function QueueItem({ item }: Props) {
       <span className="queue-item__name">{item.track_name ?? item.input}</span>
       {item.bpm ? <span className="queue-item__bpm">{item.bpm}</span> : null}
       {item.key ? <span className="queue-item__key">{item.key}</span> : null}
-      <span className="queue-item__status">{statusLabel}</span>
+      {item.status === 'queued' && onStart
+        ? <button className="queue-item__start" onClick={onStart}>▶</button>
+        : <span className="queue-item__status">{statusLabel}</span>
+      }
     </div>
   );
 }
