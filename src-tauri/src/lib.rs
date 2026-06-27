@@ -1,4 +1,5 @@
 mod config;
+mod router;
 
 use tauri::Manager;
 
