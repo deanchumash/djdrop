@@ -71,23 +71,43 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
         .map_err(|e| format!("yt-dlp not found: {e}"))?;
 
     let stdout = child.stdout.take().unwrap();
-    let mut lines = BufReader::new(stdout).lines();
-    let mut file_path = String::new();
+    let stderr = child.stderr.take().unwrap();
 
-    while let Ok(Some(line)) = lines.next_line().await {
-        // yt-dlp --print after_move:filepath prints the output path
-        if line.ends_with(".mp3") || line.ends_with(".m4a") {
-            file_path = line.clone();
+    let app_clone = app.clone();
+    let id_clone = id.to_string();
+
+    // Read stderr for progress lines concurrently with stdout
+    let progress_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(pct) = parse_ytdlp_progress(&line) {
+                let _ = app_clone.emit("download:progress", ProgressPayload {
+                    id: id_clone.clone(),
+                    percent: pct,
+                });
+            }
         }
-        // Parse "[download]  42.3% of" for progress
-        if let Some(pct) = parse_ytdlp_progress(&line) {
-            let _ = app.emit("download:progress", ProgressPayload { id: id.to_string(), percent: pct });
+    });
+
+    // Read stdout for the filepath (--print after_move:filepath outputs one line)
+    let mut stdout_lines = BufReader::new(stdout).lines();
+    let mut file_path = String::new();
+    while let Ok(Some(line)) = stdout_lines.next_line().await {
+        let trimmed = line.trim().to_string();
+        if !trimmed.is_empty() {
+            file_path = trimmed;
         }
     }
+
+    let _ = progress_task.await;
 
     let status = child.wait().await.map_err(|e| e.to_string())?;
     if !status.success() {
         return Err("yt-dlp exited with error".into());
+    }
+
+    if file_path.is_empty() {
+        return Err("yt-dlp did not report output filepath".into());
     }
 
     let track_name = std::path::Path::new(&file_path)
