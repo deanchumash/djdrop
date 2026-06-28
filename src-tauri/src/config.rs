@@ -48,7 +48,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            output_dir: dirs::music_dir()
+            output_dir: dirs::audio_dir()
                 .unwrap_or_default()
                 .join("djdrop")
                 .to_string_lossy()
