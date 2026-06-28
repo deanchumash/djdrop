@@ -11,9 +11,25 @@ interface Props {
 export function Circle({ onDrop, progress, onClickBody, onClickSearch }: Props) {
   const [isDragOver, setIsDragOver] = useState(false);
 
+  // Only start window drag once mouse moves; plain click still fires onClick
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
-    getCurrentWindow().startDragging();
+    const startX = e.clientX;
+    const startY = e.clientY;
+
+    const onMove = (me: MouseEvent) => {
+      if (Math.abs(me.clientX - startX) > 4 || Math.abs(me.clientY - startY) > 4) {
+        cleanup();
+        getCurrentWindow().startDragging();
+      }
+    };
+    const onUp = () => cleanup();
+    const cleanup = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   };
 
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragOver(true); };
