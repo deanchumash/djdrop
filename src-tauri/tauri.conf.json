@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "djdrop",
-        "width": 72,
-        "height": 72,
+        "width": 300,
+        "height": 440,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
