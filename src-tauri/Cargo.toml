@@ -14,7 +14,6 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-drag = "2"
 tauri-plugin-shell = "2"
-tauri-plugin-keyring = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -25,7 +24,7 @@ url = "2"
 which = "6"
 anyhow = "1"
 dirs = "5"
-aubio-rs = "0.3"
+aubio-rs = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,4 +1,4 @@
-import { startDrag } from '@tauri-apps/plugin-drag';
+import { startDrag } from '../lib/plugin-drag';
 import type { DownloadItem } from '../types';
 
 const SOURCE_ICONS: Record<string, string> = {

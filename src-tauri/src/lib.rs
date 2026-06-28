@@ -42,7 +42,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_keyring::init())
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,

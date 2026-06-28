@@ -30,7 +30,7 @@ foreach ($bin in $required) {
 }
 
 Write-Host "=== Building djdrop ==="
-cargo tauri build
+npm run tauri -- build
 
 $msi = Get-ChildItem "src-tauri\target\release\bundle\msi\*.msi" |
     Sort-Object LastWriteTime -Descending |
