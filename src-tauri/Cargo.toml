@@ -25,6 +25,7 @@ url = "2"
 which = "6"
 anyhow = "1"
 dirs = "5"
+aubio-rs = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
