@@ -18,6 +18,7 @@ html, body, #root {
 }
 
 
+.circle:hover { background: #2a2a4e; }
 .circle.drag-over { box-shadow: 0 0 0 3px #4ade80; }
 
 .progress-ring {

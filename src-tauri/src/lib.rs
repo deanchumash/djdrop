@@ -51,9 +51,8 @@ pub fn run() {
         ])
         .setup(|app| {
             if let Some(win) = app.get_webview_window("main") {
-                // Transparent windows on Windows default to click-through;
-                // explicitly opt in to receiving cursor events.
                 let _ = win.set_ignore_cursor_events(false);
+                win.open_devtools();
             }
             Ok(())
         })
