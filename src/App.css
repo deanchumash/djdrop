@@ -12,12 +12,11 @@ html, body, #root {
   background: #1a1a2e;
   display: flex; align-items: center; justify-content: center;
   color: white; font-size: 24px;
-  cursor: default;
+  cursor: grab;
   transition: background 0.15s, box-shadow 0.15s;
   position: relative;
 }
 
-.circle[data-tauri-drag-region] { cursor: move; }
 
 .circle.drag-over { box-shadow: 0 0 0 3px #4ade80; }
 

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 interface Props {
   onDrop: (input: string) => void;
@@ -9,6 +10,11 @@ interface Props {
 
 export function Circle({ onDrop, progress, onClickBody, onClickSearch }: Props) {
   const [isDragOver, setIsDragOver] = useState(false);
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    getCurrentWindow().startDragging();
+  };
 
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragOver(true); };
   const handleDragLeave = () => setIsDragOver(false);
@@ -29,7 +35,7 @@ export function Circle({ onDrop, progress, onClickBody, onClickSearch }: Props) 
   return (
     <div
       className={`circle${isDragOver ? ' drag-over' : ''}`}
-      data-tauri-drag-region
+      onMouseDown={handleMouseDown}
       onClick={onClickBody}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -43,7 +49,11 @@ export function Circle({ onDrop, progress, onClickBody, onClickSearch }: Props) 
         </svg>
       ) : null}
       ↓
-      <button className="search-btn" onClick={e => { e.stopPropagation(); onClickSearch?.(); }}>🔍</button>
+      <button
+        className="search-btn"
+        onMouseDown={e => e.stopPropagation()}
+        onClick={e => { e.stopPropagation(); onClickSearch?.(); }}
+      >🔍</button>
     </div>
   );
 }
