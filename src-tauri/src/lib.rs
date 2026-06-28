@@ -7,6 +7,45 @@ mod router;
 
 use tauri::Manager;
 
+// Win32 APIs for hit-test region management (Windows only)
+#[cfg(windows)]
+mod win32 {
+    #[link(name = "gdi32")]
+    extern "system" {
+        pub fn CreateEllipticRgn(x1: i32, y1: i32, x2: i32, y2: i32) -> isize;
+        pub fn CreateRectRgn(x1: i32, y1: i32, x2: i32, y2: i32) -> isize;
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        pub fn SetWindowRgn(hwnd: isize, hrgn: isize, redraw: i32) -> i32;
+    }
+}
+
+// Must match tauri.conf.json window size and App.css circle position
+const WIN_W: i32 = 300;
+const WIN_H: i32 = 440;
+const CIRCLE: i32 = 72;
+
+/// Restrict mouse hit-testing to the circle when no panels are open,
+/// or to the full window when a panel is visible.
+#[cfg(windows)]
+fn apply_window_region(win: &tauri::WebviewWindow, panels_open: bool) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = win.window_handle() else { return };
+    let hwnd = match handle.as_raw() {
+        RawWindowHandle::Win32(h) => h.hwnd.as_ptr() as isize,
+        _ => return,
+    };
+    unsafe {
+        let rgn = if panels_open {
+            win32::CreateRectRgn(0, 0, WIN_W, WIN_H)
+        } else {
+            win32::CreateEllipticRgn(WIN_W - CIRCLE, WIN_H - CIRCLE, WIN_W, WIN_H)
+        };
+        win32::SetWindowRgn(hwnd, rgn, 1);
+    }
+}
+
 #[tauri::command]
 async fn get_config(app: tauri::AppHandle) -> Result<config::Config, String> {
     config::read(&app).map_err(|e| e.to_string())
@@ -37,22 +76,28 @@ async fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+/// Called from React whenever any panel opens or closes.
+#[tauri::command]
+fn set_panels_open(app: tauri::AppHandle, open: bool) {
+    #[cfg(windows)]
+    if let Some(win) = app.get_webview_window("main") {
+        apply_window_region(&win, open);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
-            get_config,
-            save_config,
-            start_download,
-            save_credential,
-            quit_app,
+            get_config, save_config, start_download, save_credential, quit_app, set_panels_open,
         ])
         .setup(|app| {
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.set_ignore_cursor_events(false);
-                win.open_devtools();
+                #[cfg(windows)]
+                apply_window_region(&win, false);
             }
             Ok(())
         })

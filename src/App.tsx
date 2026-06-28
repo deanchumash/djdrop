@@ -1,5 +1,6 @@
 import './App.css';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { Circle } from './components/Circle';
 import { SearchBar } from './components/SearchBar';
 import { QueuePanel } from './components/QueuePanel';
@@ -13,6 +14,10 @@ function App() {
   const [showSearch, setShowSearch] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+
+  useEffect(() => {
+    invoke('set_panels_open', { open: showQueue || showSearch || showSettings });
+  }, [showQueue, showSearch, showSettings]);
 
   const handleDrop = (input: string) => {
     if (config?.auto_download !== false) {
