@@ -33,7 +33,7 @@ fn apply_window_region(win: &tauri::WebviewWindow, panels_open: bool) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     let Ok(handle) = win.window_handle() else { return };
     let hwnd = match handle.as_raw() {
-        RawWindowHandle::Win32(h) => h.hwnd.as_ptr() as isize,
+        RawWindowHandle::Win32(h) => h.hwnd.get(),
         _ => return,
     };
     unsafe {
