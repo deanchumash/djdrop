@@ -22,6 +22,11 @@ mod win32 {
         pub fn SetWindowLongPtrW(hwnd: isize, n_index: i32, dw_new_long: isize) -> isize;
         pub fn SetWindowPos(hwnd: isize, hwnd_insert_after: isize, x: i32, y: i32, cx: i32, cy: i32, u_flags: u32) -> i32;
     }
+    #[link(name = "dwmapi")]
+    extern "system" {
+        // pv_attribute is always a *const u32 (DWORD) for the attributes we use
+        pub fn DwmSetWindowAttribute(hwnd: isize, dw_attribute: u32, pv_attribute: *const u32, cb_attribute: u32) -> i32;
+    }
 }
 
 // Must match tauri.conf.json window size and App.css circle position
@@ -44,10 +49,19 @@ fn strip_window_chrome(win: &tauri::WebviewWindow) {
     const CHROME_BITS: isize = 0x00C00000 | 0x00040000 | 0x00020000 | 0x00010000 | 0x00080000;
     // SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
     const SWP_FLAGS: u32 = 0x0002 | 0x0001 | 0x0004 | 0x0020;
+    // DWM attributes (Windows 11 22000+): remove compositor border and round corners
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const DWMWCP_DONOTROUND: u32 = 1;
+    const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
     unsafe {
+        // Strip Win32 style bits
         let style = win32::GetWindowLongPtrW(hwnd, GWL_STYLE);
         win32::SetWindowLongPtrW(hwnd, GWL_STYLE, style & !CHROME_BITS);
         win32::SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FLAGS);
+        // Tell DWM compositor to draw no border and no rounded corners
+        win32::DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &DWMWCP_DONOTROUND, 4);
+        win32::DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &DWMWA_COLOR_NONE, 4);
     }
 }
 
