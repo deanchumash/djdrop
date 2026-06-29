@@ -26,9 +26,6 @@ mod win32 {
         pub fn SetWindowPos(hwnd: isize, hwnd_insert_after: isize, x: i32, y: i32, cx: i32, cy: i32, u_flags: u32) -> i32;
         pub fn GetClientRect(hwnd: isize, lp_rect: *mut RECT) -> i32;
         pub fn GetDpiForWindow(hwnd: isize) -> u32;
-        // GW_CHILD = 5: first direct child (the WebView2 host HWND)
-        pub fn GetWindow(hwnd: isize, u_cmd: u32) -> isize;
-        pub fn MoveWindow(hwnd: isize, x: i32, y: i32, n_width: i32, n_height: i32, b_repaint: i32) -> i32;
     }
     #[link(name = "dwmapi")]
     extern "system" {
@@ -66,24 +63,24 @@ fn apply_dwm_borderless(hwnd: isize) {
     }
 }
 
-/// Strip title bar / frame style bits, then resize the outer window to the exact
-/// logical size (WIN_W × WIN_H scaled to physical pixels) and reposition the
-/// WebView2 child to fill it. Required because:
+/// Strip title bar / frame style bits and resize the outer window to the exact
+/// desired physical size (WIN_W × WIN_H × DPI_scale). Required because:
 ///   1. tauri.conf.json decorations:false is sometimes overridden by WebView2 init.
 ///   2. Tauri's width/height config is the *inner* (content) size, so with decorations
-///      the outer window is wider/taller. Stripping chrome without resizing leaves the
-///      outer window oversized — WebView2 fills the too-large area and the CSS circle
-///      (right:0) no longer aligns with the window boundary.
+///      the outer window is wider/taller. Stripping chrome without also resizing leaves
+///      the outer window oversized — WebView2 fills the too-large area and the CSS
+///      circle (right:0) no longer aligns with the window boundary.
+/// The explicit SetWindowPos resize fires WM_SIZE; Tauri's handler then calls
+/// WebView2 put_Bounds(0, 0, phys_w, phys_h) which correctly repositions the content.
 #[cfg(windows)]
 fn strip_window_chrome(win: &tauri::WebviewWindow) {
     let Some(hwnd) = hwnd_of(win) else { return };
     const GWL_STYLE: i32 = -16;
     // WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU
     const CHROME_BITS: isize = 0x00C00000 | 0x00040000 | 0x00020000 | 0x00010000 | 0x00080000;
-    // SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED  (no SWP_NOSIZE: we set explicit size)
+    // SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED  (no SWP_NOSIZE: set explicit size)
     const SWP_FLAGS: u32 = 0x0002 | 0x0004 | 0x0020;
     unsafe {
-        // Scale logical constants to physical pixels for this monitor's DPI
         let dpi = win32::GetDpiForWindow(hwnd);
         let scale = if dpi == 0 { 1.0_f32 } else { dpi as f32 / 96.0 };
         let phys_w = (WIN_W as f32 * scale).round() as i32;
@@ -91,17 +88,9 @@ fn strip_window_chrome(win: &tauri::WebviewWindow) {
 
         let style = win32::GetWindowLongPtrW(hwnd, GWL_STYLE);
         win32::SetWindowLongPtrW(hwnd, GWL_STYLE, style & !CHROME_BITS);
-        // Commit style change and enforce the exact desired outer size.
-        // After strip the outer window == client area == phys_w × phys_h.
+        // Commit style change and set the outer window to the exact desired size.
+        // Windows fires WM_SIZE synchronously; Tauri's handler repositions WebView2.
         win32::SetWindowPos(hwnd, 0, 0, 0, phys_w, phys_h, SWP_FLAGS);
-
-        // Move WebView2 child (GW_CHILD=5) to fill the now-correct client area.
-        // Belt-and-suspenders: SetWindowPos fires WM_SIZE which Tauri handles,
-        // but doing it directly ensures the child is at (0,0) synchronously.
-        let child = win32::GetWindow(hwnd, 5);
-        if child != 0 {
-            win32::MoveWindow(child, 0, 0, phys_w, phys_h, 1);
-        }
     }
     apply_dwm_borderless(hwnd);
 }
