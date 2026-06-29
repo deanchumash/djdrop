@@ -95,6 +95,7 @@ pub fn run() {
         ])
         .setup(|app| {
             if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_decorations(false);
                 let _ = win.set_ignore_cursor_events(false);
                 #[cfg(windows)]
                 apply_window_region(&win, false);

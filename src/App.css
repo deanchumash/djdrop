@@ -6,6 +6,8 @@ html, body, #root {
   user-select: none;
 }
 
+::-webkit-scrollbar { display: none; }
+
 .app-root {
   position: relative;
   width: 300px;
