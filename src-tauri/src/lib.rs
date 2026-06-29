@@ -7,7 +7,7 @@ mod router;
 
 use tauri::Manager;
 
-// Win32 APIs for hit-test region management (Windows only)
+// Win32 APIs for hit-test region and decoration management (Windows only)
 #[cfg(windows)]
 mod win32 {
     #[link(name = "gdi32")]
@@ -18,6 +18,9 @@ mod win32 {
     #[link(name = "user32")]
     extern "system" {
         pub fn SetWindowRgn(hwnd: isize, hrgn: isize, redraw: i32) -> i32;
+        pub fn GetWindowLongPtrW(hwnd: isize, n_index: i32) -> isize;
+        pub fn SetWindowLongPtrW(hwnd: isize, n_index: i32, dw_new_long: isize) -> isize;
+        pub fn SetWindowPos(hwnd: isize, hwnd_insert_after: isize, x: i32, y: i32, cx: i32, cy: i32, u_flags: u32) -> i32;
     }
 }
 
@@ -25,6 +28,28 @@ mod win32 {
 const WIN_W: i32 = 300;
 const WIN_H: i32 = 440;
 const CIRCLE: i32 = 72;
+
+/// Strip title bar and borders via Win32 — belt-and-suspenders over decorations:false
+/// in tauri.conf.json, which WebView2 can override during initialisation.
+#[cfg(windows)]
+fn strip_window_chrome(win: &tauri::WebviewWindow) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = win.window_handle() else { return };
+    let hwnd = match handle.as_raw() {
+        RawWindowHandle::Win32(h) => h.hwnd.get(),
+        _ => return,
+    };
+    const GWL_STYLE: i32 = -16;
+    // WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU
+    const CHROME_BITS: isize = 0x00C00000 | 0x00040000 | 0x00020000 | 0x00010000 | 0x00080000;
+    // SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
+    const SWP_FLAGS: u32 = 0x0002 | 0x0001 | 0x0004 | 0x0020;
+    unsafe {
+        let style = win32::GetWindowLongPtrW(hwnd, GWL_STYLE);
+        win32::SetWindowLongPtrW(hwnd, GWL_STYLE, style & !CHROME_BITS);
+        win32::SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FLAGS);
+    }
+}
 
 /// Restrict mouse hit-testing to the circle when no panels are open,
 /// or to the full window when a panel is visible.
@@ -98,7 +123,10 @@ pub fn run() {
                 let _ = win.set_decorations(false);
                 let _ = win.set_ignore_cursor_events(false);
                 #[cfg(windows)]
-                apply_window_region(&win, false);
+                {
+                    strip_window_chrome(&win);
+                    apply_window_region(&win, false);
+                }
             }
             Ok(())
         })
