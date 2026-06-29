@@ -10,6 +10,9 @@ use tauri::Manager;
 // Win32 APIs for hit-test region and decoration management (Windows only)
 #[cfg(windows)]
 mod win32 {
+    #[repr(C)]
+    pub struct RECT { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
+
     #[link(name = "gdi32")]
     extern "system" {
         pub fn CreateEllipticRgn(x1: i32, y1: i32, x2: i32, y2: i32) -> isize;
@@ -21,6 +24,11 @@ mod win32 {
         pub fn GetWindowLongPtrW(hwnd: isize, n_index: i32) -> isize;
         pub fn SetWindowLongPtrW(hwnd: isize, n_index: i32, dw_new_long: isize) -> isize;
         pub fn SetWindowPos(hwnd: isize, hwnd_insert_after: isize, x: i32, y: i32, cx: i32, cy: i32, u_flags: u32) -> i32;
+        pub fn GetClientRect(hwnd: isize, lp_rect: *mut RECT) -> i32;
+        pub fn GetDpiForWindow(hwnd: isize) -> u32;
+        // GW_CHILD = 5: first direct child (the WebView2 host HWND)
+        pub fn GetWindow(hwnd: isize, u_cmd: u32) -> isize;
+        pub fn MoveWindow(hwnd: isize, x: i32, y: i32, n_width: i32, n_height: i32, b_repaint: i32) -> i32;
     }
     #[link(name = "dwmapi")]
     extern "system" {
@@ -28,7 +36,8 @@ mod win32 {
     }
 }
 
-// Must match tauri.conf.json window size and App.css circle position
+// Logical-pixel constants — must match tauri.conf.json and App.css .circle size.
+// Physical pixel values are derived at runtime via GetDpiForWindow / GetClientRect.
 const WIN_W: i32 = 300;
 const WIN_H: i32 = 440;
 const CIRCLE: i32 = 72;
@@ -44,7 +53,7 @@ fn hwnd_of(win: &tauri::WebviewWindow) -> Option<isize> {
 
 /// Tell the DWM compositor to draw no border and no rounded corners.
 /// Must be called after every SetWindowRgn — a rectangular region causes
-/// DWM to re-enable the compositor border.
+/// DWM to re-enable the compositor border independently of Win32 style bits.
 #[cfg(windows)]
 fn apply_dwm_borderless(hwnd: isize) {
     const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33; // Windows 11 22000+
@@ -57,8 +66,12 @@ fn apply_dwm_borderless(hwnd: isize) {
     }
 }
 
-/// Strip title bar and borders via Win32 — belt-and-suspenders over decorations:false
-/// in tauri.conf.json, which WebView2 can override during initialisation.
+/// Strip title bar / frame style bits, then reposition the WebView2 child window
+/// to fill the now-decoration-free client area. Required because:
+///   1. tauri.conf.json decorations:false is sometimes overridden by WebView2 init.
+///   2. When the window was created with decorations, WebView2 was placed at the
+///      decorated client-area offset (e.g. 4px left, 34px down). After stripping
+///      the chrome, that offset becomes a blank gap — MoveWindow corrects it.
 #[cfg(windows)]
 fn strip_window_chrome(win: &tauri::WebviewWindow) {
     let Some(hwnd) = hwnd_of(win) else { return };
@@ -70,26 +83,45 @@ fn strip_window_chrome(win: &tauri::WebviewWindow) {
     unsafe {
         let style = win32::GetWindowLongPtrW(hwnd, GWL_STYLE);
         win32::SetWindowLongPtrW(hwnd, GWL_STYLE, style & !CHROME_BITS);
+        // SWP_FRAMECHANGED commits the style change and recalculates the client area
         win32::SetWindowPos(hwnd, 0, 0, 0, 0, 0, SWP_FLAGS);
+
+        // GetClientRect now returns the full (physical) client area after chrome strip
+        let mut rect = win32::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        win32::GetClientRect(hwnd, &mut rect);
+
+        // Move WebView2 child (GW_CHILD=5) to fill the entire client area
+        let child = win32::GetWindow(hwnd, 5);
+        if child != 0 {
+            win32::MoveWindow(child, 0, 0, rect.right, rect.bottom, 1);
+        }
     }
     apply_dwm_borderless(hwnd);
 }
 
-/// Restrict mouse hit-testing to the circle when no panels are open,
-/// or to the full window when a panel is visible.
+/// Restrict mouse hit-testing to the circle (panels closed) or full window (panels open).
+/// Uses physical pixel sizes from GetClientRect / GetDpiForWindow so the region matches
+/// the CSS layout at any DPI scaling factor.
 #[cfg(windows)]
 fn apply_window_region(win: &tauri::WebviewWindow, panels_open: bool) {
     let Some(hwnd) = hwnd_of(win) else { return };
     unsafe {
+        let mut rect = win32::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        win32::GetClientRect(hwnd, &mut rect);
+        let w = rect.right;
+        let h = rect.bottom;
+
+        // Scale the logical CIRCLE constant to physical pixels via DPI
+        let dpi = win32::GetDpiForWindow(hwnd);
+        let circle_phys = (CIRCLE as f32 * dpi as f32 / 96.0).round() as i32;
+
         let rgn = if panels_open {
-            win32::CreateRectRgn(0, 0, WIN_W, WIN_H)
+            win32::CreateRectRgn(0, 0, w, h)
         } else {
-            win32::CreateEllipticRgn(WIN_W - CIRCLE, WIN_H - CIRCLE, WIN_W, WIN_H)
+            win32::CreateEllipticRgn(w - circle_phys, h - circle_phys, w, h)
         };
         win32::SetWindowRgn(hwnd, rgn, 1);
     }
-    // Re-apply DWM borderless: a rectangular SetWindowRgn causes the compositor
-    // to re-enable its border independently of Win32 style bits.
     apply_dwm_borderless(hwnd);
 }
 
