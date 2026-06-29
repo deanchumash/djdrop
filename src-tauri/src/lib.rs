@@ -88,9 +88,18 @@ fn strip_window_chrome(win: &tauri::WebviewWindow) {
 
         let style = win32::GetWindowLongPtrW(hwnd, GWL_STYLE);
         win32::SetWindowLongPtrW(hwnd, GWL_STYLE, style & !CHROME_BITS);
-        // Commit style change and set the outer window to the exact desired size.
-        // Windows fires WM_SIZE synchronously; Tauri's handler repositions WebView2.
         win32::SetWindowPos(hwnd, 0, 0, 0, phys_w, phys_h, SWP_FLAGS);
+
+        // Diagnostic: capture actual values so we can verify DPI/size assumptions
+        let mut after_rect = win32::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        win32::GetClientRect(hwnd, &mut after_rect);
+        let tauri_inner = win.inner_size().map(|s| format!("{}x{}", s.width, s.height)).unwrap_or_else(|_| "err".into());
+        let tauri_scale = win.scale_factor().map(|s| format!("{:.3}", s)).unwrap_or_else(|_| "err".into());
+        let msg = format!(
+            "=== djdrop win32 diag ===\nhwnd: {hwnd}\ndpi: {dpi}\nscale: {scale:.3}\nphys_w/h (computed): {phys_w}x{phys_h}\nstyle_before: {style:08x}\nclient_after_strip: {}x{}\ntauri_inner_size: {tauri_inner}\ntauri_scale_factor: {tauri_scale}\n",
+            after_rect.right, after_rect.bottom
+        );
+        let _ = std::fs::write(r"C:\Users\dank\AppData\Local\Temp\djdrop_debug.txt", &msg);
     }
     apply_dwm_borderless(hwnd);
 }
@@ -110,6 +119,14 @@ fn apply_window_region(win: &tauri::WebviewWindow, panels_open: bool) {
         // Scale the logical CIRCLE constant to physical pixels via DPI
         let dpi = win32::GetDpiForWindow(hwnd);
         let circle_phys = (CIRCLE as f32 * dpi as f32 / 96.0).round() as i32;
+
+        // Append region info to diagnostic file
+        let extra = format!(
+            "apply_window_region panels_open={panels_open}: client={w}x{h} dpi={dpi} circle_phys={circle_phys}\n"
+        );
+        if let Ok(existing) = std::fs::read_to_string(r"C:\Users\dank\AppData\Local\Temp\djdrop_debug.txt") {
+            let _ = std::fs::write(r"C:\Users\dank\AppData\Local\Temp\djdrop_debug.txt", existing + &extra);
+        }
 
         let rgn = if panels_open {
             win32::CreateRectRgn(0, 0, w, h)
