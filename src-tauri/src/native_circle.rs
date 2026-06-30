@@ -1,23 +1,38 @@
 /// Pure Win32 layered window for the circle — no WebView2.
-/// Per-pixel alpha via UpdateLayeredWindow; OLE IDropTarget for browser URL drops.
+/// Per-pixel alpha via UpdateLayeredWindow; raw-vtable IDropTarget for browser URL drops.
 #![cfg(windows)]
 
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use uuid::Uuid;
-use windows::{
-    core::*,
-    Win32::{
-        Foundation::*,
-        Graphics::Gdi::*,
-        System::{
-            Com::*,
-            DataExchange::*,
-            Memory::*,
-            Ole::*,
-        },
-        UI::{
-            HiDpi::GetDpiForWindow,
-            WindowsAndMessaging::*,
+
+use windows::Win32::{
+    Foundation::{
+        BOOL, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, PCWSTR, POINT, RECT, SIZE, WPARAM,
+        COLORREF,
+    },
+    Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, DIB_RGB_COLORS, HDC, HBITMAP,
+        HGDIOBJ, ULW_ALPHA, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject,
+        GetDC, ReleaseDC, SelectObject, UpdateLayeredWindow,
+    },
+    System::{
+        LibraryLoader::GetModuleHandleW,
+        Memory::{GlobalLock, GlobalSize, GlobalUnlock, HGLOBAL},
+    },
+    UI::{
+        HiDpi::GetDpiForWindow,
+        Input::KeyboardAndMouse::{ReleaseCapture, SetCapture},
+        WindowsAndMessaging::{
+            CS_HREDRAW, CS_VREDRAW, CREATESTRUCTW, GWLP_USERDATA, MONITORINFO,
+            MONITOR_DEFAULTTOPRIMARY, MSG, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNOACTIVATE,
+            SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, WM_DESTROY, WM_LBUTTONDOWN,
+            WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+            WS_EX_TOPMOST, WS_POPUP, WNDCLASSEXW, CreateWindowExW, DefWindowProcW,
+            DispatchMessageW, GetCursorPos, GetDesktopWindow, GetMessageW, GetMonitorInfoW,
+            GetSystemMetrics, GetWindowLongPtrW, GetWindowRect, MonitorFromWindow,
+            PostQuitMessage, RegisterClassExW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+            TranslateMessage,
         },
     },
 };
@@ -27,12 +42,242 @@ pub static CIRCLE_HWND: AtomicIsize = AtomicIsize::new(0);
 const W: i32 = 72;
 const H: i32 = 72;
 
-// Navy fill:  #1a1a2e
 const COL_BG: (u8, u8, u8) = (0x1a, 0x1a, 0x2e);
-// Hover fill: #2a2a4e
 const COL_HOVER: (u8, u8, u8) = (0x2a, 0x2a, 0x4e);
-// Green ring: #4ade80
 const COL_RING: (u8, u8, u8) = (0x4a, 0xde, 0x80);
+
+// ── raw COM types ─────────────────────────────────────────────────────────────
+
+const DROPEFFECT_COPY: u32 = 1;
+const TYMED_HGLOBAL: u32 = 1;
+const DVASPECT_CONTENT: u32 = 1;
+const CF_UNICODETEXT: u16 = 13;
+const CF_TEXT: u16 = 1;
+const S_OK: i32 = 0;
+const COINIT_APARTMENTTHREADED: u32 = 0x2;
+
+#[repr(C)]
+#[derive(PartialEq)]
+struct Guid {
+    data1: u32,
+    data2: u16,
+    data3: u16,
+    data4: [u8; 8],
+}
+
+// {00000000-0000-0000-C000-000000000046}
+const IID_IUNKNOWN: Guid = Guid {
+    data1: 0,
+    data2: 0,
+    data3: 0,
+    data4: [0xC0, 0, 0, 0, 0, 0, 0, 0x46],
+};
+
+// {00000122-0000-0000-C000-000000000046}
+const IID_IDROPTARGET: Guid = Guid {
+    data1: 0x0000_0122,
+    data2: 0,
+    data3: 0,
+    data4: [0xC0, 0, 0, 0, 0, 0, 0, 0x46],
+};
+
+#[repr(C)]
+struct FormatEtcRaw {
+    cf_format: u16,
+    ptd: *mut c_void,
+    dw_aspect: u32,
+    lindex: i32,
+    tymed: u32,
+}
+
+// Mirrors Windows STGMEDIUM (tymed + union[ptr-sized] + pUnkForRelease)
+#[repr(C)]
+struct StgMediumRaw {
+    tymed: u32,
+    data: *mut c_void, // hGlobal when tymed == TYMED_HGLOBAL
+    pUnkForRelease: *mut c_void,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct PointlRaw {
+    x: i32,
+    y: i32,
+}
+
+#[link(name = "ole32")]
+extern "system" {
+    fn CoInitializeEx(reserved: *const c_void, coinit: u32) -> i32;
+    fn CoUninitialize();
+    fn RegisterDragDrop(hwnd: HWND, pdt: *mut DropTargetCom) -> i32;
+    fn RevokeDragDrop(hwnd: HWND) -> i32;
+    fn ReleaseStgMedium(p: *mut StgMediumRaw);
+}
+
+// ── IDropTarget COM object (raw vtable) ───────────────────────────────────────
+
+type QiFn  = unsafe extern "system" fn(*mut DropTargetCom, *const Guid, *mut *mut c_void) -> i32;
+type RefFn = unsafe extern "system" fn(*mut DropTargetCom) -> u32;
+type DragEnterFn = unsafe extern "system" fn(*mut DropTargetCom, *mut c_void, u32, PointlRaw, *mut u32) -> i32;
+type DragOverFn  = unsafe extern "system" fn(*mut DropTargetCom, u32, PointlRaw, *mut u32) -> i32;
+type DragLeaveFn = unsafe extern "system" fn(*mut DropTargetCom) -> i32;
+type DropFn      = unsafe extern "system" fn(*mut DropTargetCom, *mut c_void, u32, PointlRaw, *mut u32) -> i32;
+
+#[repr(C)]
+struct IDropTargetVtbl {
+    query_interface: QiFn,
+    add_ref: RefFn,
+    release: RefFn,
+    drag_enter: DragEnterFn,
+    drag_over: DragOverFn,
+    drag_leave: DragLeaveFn,
+    drop: DropFn,
+}
+
+#[repr(C)]
+struct DropTargetCom {
+    vtbl: *const IDropTargetVtbl,
+    ref_count: std::sync::atomic::AtomicU32,
+    app: tauri::AppHandle,
+}
+
+static DROP_TARGET_VTBL: IDropTargetVtbl = IDropTargetVtbl {
+    query_interface: dt_query_interface,
+    add_ref: dt_add_ref,
+    release: dt_release,
+    drag_enter: dt_drag_enter,
+    drag_over: dt_drag_over,
+    drag_leave: dt_drag_leave,
+    drop: dt_drop,
+};
+
+fn create_drop_target(app: tauri::AppHandle) -> *mut DropTargetCom {
+    Box::into_raw(Box::new(DropTargetCom {
+        vtbl: &DROP_TARGET_VTBL,
+        ref_count: std::sync::atomic::AtomicU32::new(1),
+        app,
+    }))
+}
+
+unsafe extern "system" fn dt_query_interface(
+    this: *mut DropTargetCom,
+    riid: *const Guid,
+    ppv: *mut *mut c_void,
+) -> i32 {
+    const E_POINTER: i32 = -2147467261;
+    const E_NOINTERFACE: i32 = -2147467262;
+    if ppv.is_null() { return E_POINTER; }
+    if &*riid == &IID_IUNKNOWN || &*riid == &IID_IDROPTARGET {
+        *ppv = this as *mut c_void;
+        dt_add_ref(this);
+        S_OK
+    } else {
+        *ppv = std::ptr::null_mut();
+        E_NOINTERFACE
+    }
+}
+
+unsafe extern "system" fn dt_add_ref(this: *mut DropTargetCom) -> u32 {
+    (*this).ref_count.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+unsafe extern "system" fn dt_release(this: *mut DropTargetCom) -> u32 {
+    let prev = (*this).ref_count.fetch_sub(1, Ordering::Release);
+    if prev == 1 {
+        std::sync::atomic::fence(Ordering::Acquire);
+        drop(Box::from_raw(this));
+    }
+    prev - 1
+}
+
+unsafe extern "system" fn dt_drag_enter(
+    _this: *mut DropTargetCom, _pdata: *mut c_void, _key: u32,
+    _pt: PointlRaw, pdweffect: *mut u32,
+) -> i32 {
+    if !pdweffect.is_null() { *pdweffect = DROPEFFECT_COPY; }
+    S_OK
+}
+
+unsafe extern "system" fn dt_drag_over(
+    _this: *mut DropTargetCom, _key: u32,
+    _pt: PointlRaw, pdweffect: *mut u32,
+) -> i32 {
+    if !pdweffect.is_null() { *pdweffect = DROPEFFECT_COPY; }
+    S_OK
+}
+
+unsafe extern "system" fn dt_drag_leave(_this: *mut DropTargetCom) -> i32 { S_OK }
+
+unsafe extern "system" fn dt_drop(
+    this: *mut DropTargetCom, pdata: *mut c_void, _key: u32,
+    _pt: PointlRaw, pdweffect: *mut u32,
+) -> i32 {
+    if !pdweffect.is_null() { *pdweffect = DROPEFFECT_COPY; }
+    if !pdata.is_null() {
+        if let Some(text) = extract_text_from_data_obj(pdata) {
+            let t = text.trim().to_string();
+            if !t.is_empty() {
+                let app = (*this).app.clone();
+                let id = Uuid::new_v4().to_string();
+                tauri::async_runtime::spawn(async move {
+                    let _ = crate::start_download_inner(app, id, t).await;
+                });
+            }
+        }
+    }
+    S_OK
+}
+
+unsafe fn extract_text_from_data_obj(pdata: *mut c_void) -> Option<String> {
+    for (cf, is_unicode) in [(CF_UNICODETEXT, true), (CF_TEXT, false)] {
+        let fmt = FormatEtcRaw {
+            cf_format: cf,
+            ptd: std::ptr::null_mut(),
+            dw_aspect: DVASPECT_CONTENT,
+            lindex: -1,
+            tymed: TYMED_HGLOBAL,
+        };
+        let mut med = StgMediumRaw {
+            tymed: 0,
+            data: std::ptr::null_mut(),
+            pUnkForRelease: std::ptr::null_mut(),
+        };
+
+        // IDataObject vtable: QueryInterface(0), AddRef(1), Release(2), GetData(3)
+        type GetDataFn = unsafe extern "system" fn(
+            *mut c_void, *const FormatEtcRaw, *mut StgMediumRaw,
+        ) -> i32;
+        let vtbl = *(pdata as *mut *const *const c_void);
+        let get_data: GetDataFn = std::mem::transmute(*vtbl.add(3));
+
+        if get_data(pdata, &fmt, &mut med) == S_OK
+            && med.tymed == TYMED_HGLOBAL
+            && !med.data.is_null()
+        {
+            let hg = HGLOBAL(med.data);
+            let ptr = GlobalLock(hg);
+            if !ptr.is_null() {
+                let size = GlobalSize(hg);
+                let text = if is_unicode {
+                    let n = size / 2;
+                    let s = std::slice::from_raw_parts(ptr as *const u16, n);
+                    String::from_utf16_lossy(s)
+                } else {
+                    let s = std::slice::from_raw_parts(ptr as *const u8, size);
+                    String::from_utf8_lossy(s).into_owned()
+                };
+                let _ = GlobalUnlock(hg);
+                ReleaseStgMedium(&mut med);
+                let clean = text.trim_end_matches('\0').trim().to_string();
+                if !clean.is_empty() { return Some(clean); }
+            }
+            ReleaseStgMedium(&mut med);
+        }
+    }
+    None
+}
+
+// ── rendering ────────────────────────────────────────────────────────────────
 
 struct CircleState {
     app: tauri::AppHandle,
@@ -42,16 +287,15 @@ struct CircleState {
     win_start: POINT,
 }
 
-// ── rendering ────────────────────────────────────────────────────────────────
-
 fn set_pixel(pixels: &mut [u32], x: i32, y: i32, r: u8, g: u8, b: u8, a: u8) {
     if x < 0 || y < 0 || x >= W || y >= H { return; }
     let pa = a as u32;
     let pr = (r as u32 * pa / 255) as u8;
     let pg = (g as u32 * pa / 255) as u8;
     let pb = (b as u32 * pa / 255) as u8;
-    // BGRA in memory (little-endian), pre-multiplied alpha
-    pixels[(y * W + x) as usize] = (pa << 24) | ((pr as u32) << 16) | ((pg as u32) << 8) | pb as u32;
+    // BGRA in memory, pre-multiplied alpha
+    pixels[(y * W + x) as usize] =
+        (pa << 24) | ((pr as u32) << 16) | ((pg as u32) << 8) | pb as u32;
 }
 
 unsafe fn redraw(hwnd: HWND, progress: f32, hover: bool) {
@@ -62,7 +306,7 @@ unsafe fn redraw(hwnd: HWND, progress: f32, hover: bool) {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
             biWidth: W,
-            biHeight: -H, // top-down
+            biHeight: -H,
             biPlanes: 1,
             biBitCount: 32,
             biCompression: BI_RGB.0,
@@ -70,13 +314,18 @@ unsafe fn redraw(hwnd: HWND, progress: f32, hover: bool) {
         },
         ..Default::default()
     };
-    let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-    let hbmp = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
+    let mut bits: *mut c_void = std::ptr::null_mut();
+    let hbmp = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
+        .unwrap_or_default();
+    if hbmp.is_invalid() {
+        DeleteDC(mem_dc);
+        ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+        return;
+    }
     let old = SelectObject(mem_dc, hbmp);
 
     let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (W * H) as usize);
 
-    // Fill circle with anti-aliased edge
     let (br, bg, bb) = if hover { COL_HOVER } else { COL_BG };
     let cx = W as f32 / 2.0;
     let cy = H as f32 / 2.0;
@@ -113,7 +362,7 @@ unsafe fn redraw(hwnd: HWND, progress: f32, hover: bool) {
         }
     }
 
-    // Progress ring (green arc, 3px wide, from top clockwise)
+    // Progress ring (green arc)
     if progress > 0.0 {
         let rr = cx - 4.0;
         let steps = 720u32;
@@ -126,7 +375,9 @@ unsafe fn redraw(hwnd: HWND, progress: f32, hover: bool) {
                 let py = (cy + (rr + dr as f32) * angle.sin()) as i32;
                 let base_a = if px >= 0 && py >= 0 && px < W && py < H {
                     ((pixels[(py * W + px) as usize] >> 24) & 0xFF) as u8
-                } else { 0 };
+                } else {
+                    0
+                };
                 if base_a > 128 {
                     let (rr, rg, rb) = COL_RING;
                     set_pixel(pixels, px, py, rr, rg, rb, base_a);
@@ -136,10 +387,10 @@ unsafe fn redraw(hwnd: HWND, progress: f32, hover: bool) {
     }
 
     let blend = BLENDFUNCTION {
-        BlendOp: 0,   // AC_SRC_OVER
+        BlendOp: 0,
         BlendFlags: 0,
         SourceConstantAlpha: 255,
-        AlphaFormat: 1, // AC_SRC_ALPHA
+        AlphaFormat: 1,
     };
     let size = SIZE { cx: W, cy: H };
     let src_pt = POINT { x: 0, y: 0 };
@@ -152,95 +403,6 @@ unsafe fn redraw(hwnd: HWND, progress: f32, hover: bool) {
     let _ = DeleteObject(hbmp);
     let _ = DeleteDC(mem_dc);
     ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
-}
-
-// ── IDropTarget ───────────────────────────────────────────────────────────────
-
-#[implement(IDropTarget)]
-struct DropTarget {
-    app: tauri::AppHandle,
-}
-
-impl IDropTarget_Impl for DropTarget_Impl {
-    fn DragEnter(
-        &self,
-        _pdataobj: Option<&IDataObject>,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
-        _pt: &POINTL,
-        pdweffect: *mut DROPEFFECT,
-    ) -> Result<()> {
-        unsafe { if !pdweffect.is_null() { *pdweffect = DROPEFFECT_COPY; } }
-        Ok(())
-    }
-
-    fn DragOver(
-        &self,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
-        _pt: &POINTL,
-        pdweffect: *mut DROPEFFECT,
-    ) -> Result<()> {
-        unsafe { if !pdweffect.is_null() { *pdweffect = DROPEFFECT_COPY; } }
-        Ok(())
-    }
-
-    fn DragLeave(&self) -> Result<()> { Ok(()) }
-
-    fn Drop(
-        &self,
-        pdataobj: Option<&IDataObject>,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
-        _pt: &POINTL,
-        pdweffect: *mut DROPEFFECT,
-    ) -> Result<()> {
-        unsafe { if !pdweffect.is_null() { *pdweffect = DROPEFFECT_COPY; } }
-        if let Some(obj) = pdataobj {
-            if let Some(text) = unsafe { extract_text(obj) } {
-                let t = text.trim().to_string();
-                if !t.is_empty() {
-                    let app = self.app.clone();
-                    let id = Uuid::new_v4().to_string();
-                    tauri::async_runtime::spawn(async move {
-                        let _ = crate::start_download_inner(app, id, t).await;
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-unsafe fn extract_text(obj: &IDataObject) -> Option<String> {
-    for cf in [CF_UNICODETEXT, CF_TEXT] {
-        let fmt = FORMATETC {
-            cfFormat: cf.0 as u16,
-            ptd: std::ptr::null_mut(),
-            dwAspect: DVASPECT_CONTENT.0,
-            lindex: -1,
-            tymed: TYMED_HGLOBAL.0,
-        };
-        let mut med = STGMEDIUM::default();
-        if obj.GetData(&fmt, &mut med).is_ok() {
-            let hg = med.Anonymous.hGlobal;
-            let ptr = GlobalLock(hg);
-            if !ptr.is_null() {
-                let text = if cf == CF_UNICODETEXT {
-                    let n = GlobalSize(hg) / 2;
-                    let s = std::slice::from_raw_parts(ptr as *const u16, n);
-                    String::from_utf16_lossy(s)
-                } else {
-                    let n = GlobalSize(hg);
-                    let s = std::slice::from_raw_parts(ptr as *const u8, n);
-                    String::from_utf8_lossy(s).into_owned()
-                };
-                let _ = GlobalUnlock(hg);
-                ReleaseStgMedium(&mut med);
-                let clean = text.trim_end_matches('\0').trim().to_string();
-                if !clean.is_empty() { return Some(clean); }
-            }
-            ReleaseStgMedium(&mut med);
-        }
-    }
-    None
 }
 
 // ── WNDPROC ───────────────────────────────────────────────────────────────────
@@ -309,7 +471,7 @@ unsafe extern "system" fn wnd_proc(
         WM_DESTROY => {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut CircleState;
             if !ptr.is_null() {
-                let _ = RevokeDragDrop(hwnd);
+                RevokeDragDrop(hwnd);
                 drop(Box::from_raw(ptr));
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
@@ -328,8 +490,7 @@ fn state_of(hwnd: HWND) -> *mut CircleState {
 
 pub fn run(app: tauri::AppHandle) {
     unsafe {
-        // Init COM on this thread (needed for OLE drag-and-drop)
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED);
 
         let hmod = GetModuleHandleW(None).unwrap_or_default();
         let class_name: Vec<u16> = "djdrop_circle\0".encode_utf16().collect();
@@ -339,13 +500,12 @@ pub fn run(app: tauri::AppHandle) {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(wnd_proc),
-            hInstance: HINSTANCE(hmod.0 as *mut _),
+            hInstance: HINSTANCE(hmod.0),
             lpszClassName: PCWSTR(class_name.as_ptr()),
             ..Default::default()
         };
         RegisterClassExW(&wc);
 
-        // Compute bottom-right position on primary monitor
         let (x, y) = primary_monitor_circle_pos();
 
         let mut state = Box::new(CircleState {
@@ -364,31 +524,26 @@ pub fn run(app: tauri::AppHandle) {
             WS_POPUP,
             x, y, W, H,
             None, None,
-            HINSTANCE(hmod.0 as *mut _),
-            Some(state_ptr as *const _),
+            HINSTANCE(hmod.0),
+            Some(state_ptr as *const c_void),
         ).unwrap();
 
-        // state is now owned by the WNDPROC via GWLP_USERDATA; don't drop the Box here
-        std::mem::forget(state);
+        std::mem::forget(state); // owned by WNDPROC via GWLP_USERDATA
 
         CIRCLE_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
 
-        // Register OLE drop target
-        let drop_target: IDropTarget = DropTarget { app }.into();
-        let _ = RegisterDragDrop(hwnd, &drop_target);
+        // Register OLE drop target (RegisterDragDrop calls AddRef)
+        let dt = create_drop_target(app);
+        RegisterDragDrop(hwnd, dt);
+        dt_release(dt); // release our ref; OLE holds its own
 
-        // Initial draw
         redraw(hwnd, 0.0, false);
-
-        // Show
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
 
-        // Message loop
         let mut msg = MSG::default();
         loop {
             match GetMessageW(&mut msg, None, 0, 0).0 {
-                0 => break,
-                -1 => break,
+                0 | -1 => break,
                 _ => {
                     let _ = TranslateMessage(&msg);
                     DispatchMessageW(&msg);
@@ -397,12 +552,11 @@ pub fn run(app: tauri::AppHandle) {
         }
 
         CIRCLE_HWND.store(0, Ordering::Relaxed);
-        let _ = CoUninitialize();
+        CoUninitialize();
     }
 }
 
 fn primary_monitor_circle_pos() -> (i32, i32) {
-    // Try to get primary monitor working area
     unsafe {
         let hwnd_desktop = GetDesktopWindow();
         let dpi = GetDpiForWindow(hwnd_desktop);
@@ -410,14 +564,16 @@ fn primary_monitor_circle_pos() -> (i32, i32) {
         let phys_w = (W as f32 * scale).round() as i32;
         let phys_h = (H as f32 * scale).round() as i32;
 
-        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
         let hmon = MonitorFromWindow(hwnd_desktop, MONITOR_DEFAULTTOPRIMARY);
         if GetMonitorInfoW(hmon, &mut info).as_bool() {
-            let wa = info.rcWork; // work area excludes taskbar
+            let wa = info.rcWork;
             return (wa.right - phys_w - 12, wa.bottom - phys_h - 12);
         }
 
-        // Fallback
         let sw = GetSystemMetrics(SM_CXSCREEN);
         let sh = GetSystemMetrics(SM_CYSCREEN);
         (sw - phys_w - 12, sh - phys_h - 60)
