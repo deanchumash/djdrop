@@ -10,20 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "label": "circle",
-        "title": "djdrop",
-        "width": 72,
-        "height": 72,
-        "decorations": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "resizable": false,
-        "skipTaskbar": false,
-        "dragDropEnabled": false
-      }
-    ],
+    "windows": [],
     "security": { "csp": null }
   },
   "bundle": {
