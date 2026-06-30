@@ -1,6 +1,7 @@
 import './App.css';
 import { useState, useEffect } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { invoke } from '@tauri-apps/api/core';
 import { SearchBar } from './components/SearchBar';
 import { QueuePanel } from './components/QueuePanel';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -60,7 +61,7 @@ export function PanelsApp() {
           onClick={() => { setShowSettings(v => !v); setShowSearch(false); }}
           title="Settings"
         >⚙</button>
-        <button className="panels-toolbar__btn" onClick={hide} title="Close">✕</button>
+        <button className="panels-toolbar__btn" onClick={() => invoke('quit_app')} title="Quit">✕</button>
       </div>
 
       {showSearch && (

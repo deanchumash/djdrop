@@ -147,6 +147,8 @@ html, body, #root {
 .settings-panel__pool input { width: 100%; margin-bottom: 3px; box-sizing: border-box; }
 .settings-panel__pool button { margin-right: 4px; background: #333; border: none; color: white; padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 10px; }
 .settings-panel__section { color: #888; margin: 4px 0; }
+.settings-panel__bpm-range { display: flex; align-items: center; gap: 6px; }
+.settings-panel__bpm-range input { width: 60px; }
 .settings-panel__saving { color: #4ade80; font-size: 10px; }
 hr { border-color: #333; margin: 8px 0; }
 .settings-panel__quit {

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useConfig } from '../hooks/useConfig';
-import type { Config } from '../types';
+import type { Config, KeyNotation } from '../types';
 
 interface Props { onClose: () => void }
 
@@ -55,6 +55,29 @@ export function SettingsPanel({ onClose }: Props) {
           <option value="pools">Pools first</option>
           <option value="youtube">YouTube first</option>
         </select>
+      </label>
+
+      <label>Key notation
+        <select value={config.key_notation ?? 'musical'} onChange={e => update({ key_notation: e.target.value as KeyNotation })}>
+          <option value="musical">Musical (e.g. Am, F#)</option>
+          <option value="camelot">Camelot (e.g. 8A, 2B)</option>
+        </select>
+      </label>
+
+      <label>BPM range
+        <div className="settings-panel__bpm-range">
+          <input
+            type="number" min={40} max={300} placeholder="min"
+            value={config.bpm_range_min ?? ''}
+            onChange={e => update({ bpm_range_min: e.target.value ? Number(e.target.value) : undefined })}
+          />
+          <span>–</span>
+          <input
+            type="number" min={40} max={300} placeholder="max"
+            value={config.bpm_range_max ?? ''}
+            onChange={e => update({ bpm_range_max: e.target.value ? Number(e.target.value) : undefined })}
+          />
+        </div>
       </label>
 
       <hr />

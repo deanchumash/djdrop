@@ -12,6 +12,7 @@ export interface PoolsConfig {
 
 export type SearchMode = 'best_match' | 'show_results';
 export type SearchPriority = 'pools' | 'youtube';
+export type KeyNotation = 'musical' | 'camelot';
 
 export interface Config {
   output_dir: string;
@@ -19,6 +20,9 @@ export interface Config {
   search_mode: SearchMode;
   search_priority: SearchPriority;
   pools: PoolsConfig;
+  bpm_range_min?: number;
+  bpm_range_max?: number;
+  key_notation: KeyNotation;
 }
 
 export type DownloadStatus = 'queued' | 'downloading' | 'analyzing' | 'done' | 'error';

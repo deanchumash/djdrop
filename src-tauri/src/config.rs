@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use tauri::Manager;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyNotation { #[default] Musical, Camelot }
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchMode { BestMatch, ShowResults }
@@ -43,6 +47,12 @@ pub struct Config {
     pub search_mode: SearchMode,
     pub search_priority: SearchPriority,
     pub pools: PoolsConfig,
+    #[serde(default)]
+    pub bpm_range_min: Option<u32>,
+    #[serde(default)]
+    pub bpm_range_max: Option<u32>,
+    #[serde(default)]
+    pub key_notation: KeyNotation,
 }
 
 impl Default for Config {
@@ -57,6 +67,9 @@ impl Default for Config {
             search_mode: SearchMode::BestMatch,
             search_priority: SearchPriority::Pools,
             pools: Default::default(),
+            bpm_range_min: None,
+            bpm_range_max: None,
+            key_notation: KeyNotation::Musical,
         }
     }
 }
