@@ -53,7 +53,9 @@ export function SettingsPanel({ onClose }: Props) {
       <label>Search source priority
         <select value={config.search_priority} onChange={e => update({ search_priority: e.target.value as Config['search_priority'] })}>
           <option value="pools">Pools first</option>
-          <option value="youtube">YouTube first</option>
+          <option value="soundcloud">SoundCloud</option>
+          <option value="youtube">YouTube</option>
+          <option value="qobuz">Qobuz</option>
         </select>
       </label>
 

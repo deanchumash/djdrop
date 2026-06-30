@@ -25,7 +25,9 @@ pub async fn analyze(app: &AppHandle, id: &str, file_path: &str) {
     let bpm = normalize_bpm(raw_bpm, cfg.bpm_range_min, cfg.bpm_range_max);
 
     // Use keyfinder-cli if present, otherwise run inline chromagram analysis.
-    let raw_key = {
+    // Always emit the raw musical key — Camelot conversion is done in the frontend
+    // so that switching the setting updates already-downloaded items instantly.
+    let key = {
         let keyfinder = crate::binaries::keyfinder_cli(app).ok()
             .filter(|p| p.exists());
         if let Some(kf) = keyfinder {
@@ -36,11 +38,6 @@ pub async fn analyze(app: &AppHandle, id: &str, file_path: &str) {
             tokio::task::spawn_blocking(move || detect_key_inline(&fp, &ff))
                 .await.unwrap_or(None).unwrap_or_default()
         }
-    };
-
-    let key = match cfg.key_notation {
-        crate::config::KeyNotation::Camelot => to_camelot(&raw_key),
-        crate::config::KeyNotation::Musical => raw_key,
     };
 
     if bpm > 0 || !key.is_empty() {
@@ -83,11 +80,14 @@ fn detect_bpm_inline(file_path: &str, ffmpeg_path: &str) -> Option<u32> {
     let win_size: usize = 1024;
     let sample_rate: u32 = 44100;
 
-    let mut child = Command::new(ffmpeg_path)
-        .args(["-i", file_path, "-f", "f32le", "-ar", "44100", "-ac", "1", "pipe:1"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn().ok()?;
+    let mut child = {
+        #[cfg(windows)] use std::os::windows::process::CommandExt;
+        let mut cmd = Command::new(ffmpeg_path);
+        cmd.args(["-i", file_path, "-f", "f32le", "-ar", "44100", "-ac", "1", "pipe:1"])
+           .stdout(Stdio::piped()).stderr(Stdio::null());
+        #[cfg(windows)] cmd.creation_flags(0x0800_0000);
+        cmd.spawn().ok()?
+    };
 
     let mut raw = Vec::new();
     child.stdout.take()?.read_to_end(&mut raw).ok()?;
@@ -111,7 +111,10 @@ fn detect_bpm_inline(file_path: &str, ffmpeg_path: &str) -> Option<u32> {
 // ── key detection ─────────────────────────────────────────────────────────────
 
 async fn run_keyfinder_path(bin: &std::path::Path, file_path: &str) -> Option<String> {
-    let output = Command::new(bin).args([file_path]).output().await.ok()?;
+    let mut cmd = Command::new(bin);
+    cmd.args([file_path]);
+    #[cfg(windows)] cmd.creation_flags(0x0800_0000);
+    let output = cmd.output().await.ok()?;
     let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if s.is_empty() { None } else { Some(s) }
 }
@@ -126,11 +129,14 @@ fn detect_key_inline(file_path: &str, ffmpeg_path: &str) -> Option<String> {
     const WIN: usize = 8192;
     const HOP: usize = 4096;
 
-    let mut child = Command::new(ffmpeg_path)
-        .args(["-i", file_path, "-f", "f32le", "-ar", &SR.to_string(), "-ac", "1", "pipe:1"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn().ok()?;
+    let mut child = {
+        #[cfg(windows)] use std::os::windows::process::CommandExt;
+        let mut cmd = Command::new(ffmpeg_path);
+        cmd.args(["-i", file_path, "-f", "f32le", "-ar", &SR.to_string(), "-ac", "1", "pipe:1"])
+           .stdout(Stdio::piped()).stderr(Stdio::null());
+        #[cfg(windows)] cmd.creation_flags(0x0800_0000);
+        cmd.spawn().ok()?
+    };
 
     let mut raw = Vec::new();
     child.stdout.take()?.read_to_end(&mut raw).ok()?;

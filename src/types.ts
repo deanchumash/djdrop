@@ -11,7 +11,7 @@ export interface PoolsConfig {
 }
 
 export type SearchMode = 'best_match' | 'show_results';
-export type SearchPriority = 'pools' | 'youtube';
+export type SearchPriority = 'pools' | 'soundcloud' | 'youtube' | 'qobuz';
 export type KeyNotation = 'musical' | 'camelot';
 
 export interface Config {

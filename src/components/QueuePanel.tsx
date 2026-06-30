@@ -1,9 +1,9 @@
 import { QueueItem } from './QueueItem';
-import type { DownloadItem } from '../types';
+import type { DownloadItem, KeyNotation } from '../types';
 
-interface Props { items: DownloadItem[]; onClose: () => void; onStart: (item: DownloadItem) => void }
+interface Props { items: DownloadItem[]; onClose: () => void; onStart: (item: DownloadItem) => void; keyNotation?: KeyNotation }
 
-export function QueuePanel({ items, onStart }: Props) {
+export function QueuePanel({ items, onStart, keyNotation }: Props) {
   if (items.length === 0) {
     return (
       <div className="queue-panel">
@@ -21,6 +21,7 @@ export function QueuePanel({ items, onStart }: Props) {
           key={item.id}
           item={item}
           onStart={item.status === 'queued' ? () => onStart(item) : undefined}
+          keyNotation={keyNotation}
         />
       ))}
     </div>

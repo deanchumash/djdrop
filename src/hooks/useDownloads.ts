@@ -9,6 +9,14 @@ export function useDownloads() {
 
   useEffect(() => {
     const unlisteners = [
+      // Emitted from Rust for every download start, including native-circle drops
+      // where the frontend didn't call startDownload (which would have added the item).
+      listen<{ id: string; input: string }>('download:queued', ({ payload }) => {
+        setDownloads(prev => {
+          if (prev.some(d => d.id === payload.id)) return prev;
+          return [{ id: payload.id, input: payload.input, status: 'queued' }, ...prev];
+        });
+      }),
       listen<ProgressPayload>('download:progress', ({ payload }) => {
         setActiveProgress(payload.percent);
         setDownloads(prev => prev.map(d =>

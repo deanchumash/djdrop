@@ -5,6 +5,8 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 #[derive(Clone, Serialize)]
 pub struct ProgressPayload { pub id: String, pub percent: u8 }
 #[derive(Clone, Serialize)]
@@ -66,8 +68,12 @@ pub async fn run_download(app: AppHandle, id: String, source: DownloadSource, in
             Err("pool sidecar not connected".to_string())
         }
         DownloadSource::Search(query) => {
-            let ytdlp_url = format!("ytsearch1:{}", query);
-            run_ytdlp(&app, &id, &ytdlp_url, &output_dir).await
+            let cfg = crate::config::read(&app).map_err(|e| e.to_string())?;
+            let url = match cfg.search_priority {
+                crate::config::SearchPriority::Soundcloud => format!("scsearch1:{}", query),
+                _ => format!("ytsearch1:{}", query),
+            };
+            run_ytdlp(&app, &id, &url, &output_dir).await
         }
     };
 
@@ -83,12 +89,12 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
         .into_owned();
     let args = ytdlp_args(url, output_dir, &ffmpeg_dir);
 
-    let mut child = Command::new(&ytdlp_bin)
-        .args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("yt-dlp not found at {:?}: {e}", ytdlp_bin))?;
+    let mut child = {
+        let mut cmd = Command::new(&ytdlp_bin);
+        cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
+        #[cfg(windows)] cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.spawn().map_err(|e| format!("yt-dlp not found at {:?}: {e}", ytdlp_bin))?
+    };
 
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
@@ -150,11 +156,12 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
 async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Result<(), String> {
     let spotdl_bin = crate::binaries::spotdl(app)?;
     let args = spotdl_args(url, output_dir);
-    let status = Command::new(&spotdl_bin)
-        .args(&args)
-        .status()
-        .await
-        .map_err(|e| format!("spotdl not found at {:?}: {e}", spotdl_bin))?;
+    let status = {
+        let mut cmd = Command::new(&spotdl_bin);
+        cmd.args(&args);
+        #[cfg(windows)] cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.status().await.map_err(|e| format!("spotdl not found at {:?}: {e}", spotdl_bin))?
+    };
 
     if !status.success() { return Err("spotdl exited with error".into()); }
 
@@ -173,13 +180,12 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
 
 async fn run_qobuz(app: &AppHandle, id: &str, url: &str, output_dir: &str, username: &str, password: &str) -> Result<(), String> {
     let args = qobuz_args(url, output_dir);
-    let status = Command::new("qobuz-dlp")
-        .args(&args)
-        .env("QOBUZ_EMAIL", username)
-        .env("QOBUZ_PASSWORD", password)
-        .status()
-        .await
-        .map_err(|e| format!("qobuz-dlp not found: {e}"))?;
+    let status = {
+        let mut cmd = Command::new("qobuz-dlp");
+        cmd.args(&args).env("QOBUZ_EMAIL", username).env("QOBUZ_PASSWORD", password);
+        #[cfg(windows)] cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.status().await.map_err(|e| format!("qobuz-dlp not found: {e}"))?
+    };
 
     if !status.success() { return Err("qobuz-dlp exited with error".into()); }
 

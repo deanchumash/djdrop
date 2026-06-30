@@ -11,9 +11,9 @@ pub enum KeyNotation { #[default] Musical, Camelot }
 #[serde(rename_all = "snake_case")]
 pub enum SearchMode { BestMatch, ShowResults }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum SearchPriority { Pools, Youtube }
+pub enum SearchPriority { Pools, Soundcloud, #[default] Youtube, Qobuz }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PoolCredentialRefs {
@@ -65,7 +65,7 @@ impl Default for Config {
                 .into_owned(),
             auto_download: true,
             search_mode: SearchMode::BestMatch,
-            search_priority: SearchPriority::Pools,
+            search_priority: SearchPriority::Youtube,
             pools: Default::default(),
             bpm_range_min: None,
             bpm_range_max: None,

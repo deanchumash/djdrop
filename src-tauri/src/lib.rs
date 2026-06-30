@@ -7,12 +7,16 @@ mod router;
 #[cfg(windows)]
 mod native_circle;
 
-use tauri::Manager;
+use serde::Serialize;
+use tauri::{Emitter, Manager};
 
 const PANELS_W: f64 = 280.0;
 const PANELS_H: f64 = 400.0;
 
 // ── download ──────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Serialize)]
+struct QueuedPayload { id: String, input: String }
 
 /// Shared by the Tauri command and the native circle's IDropTarget.
 pub async fn start_download_inner(
@@ -24,6 +28,9 @@ pub async fn start_download_inner(
     let source = router::route(&input);
     let output_dir = cfg.output_dir.clone();
     std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+    // Notify the frontend so it can show the item in the queue even when the
+    // drop came from the native circle (not from a frontend invoke).
+    let _ = app.emit("download:queued", QueuedPayload { id: id.clone(), input: input.clone() });
     tokio::spawn(downloader::run_download(app, id, source, input, output_dir));
     Ok(())
 }

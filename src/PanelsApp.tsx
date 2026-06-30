@@ -76,6 +76,7 @@ export function PanelsApp() {
             items={downloads}
             onClose={hide}
             onStart={item => triggerDownload(item)}
+            keyNotation={config?.key_notation}
           />
         )}
       </div>
