@@ -68,11 +68,10 @@ pub async fn run_download(app: AppHandle, id: String, source: DownloadSource, in
             Err("pool sidecar not connected".to_string())
         }
         DownloadSource::Search(query) => {
-            let cfg = crate::config::read(&app).map_err(|e| e.to_string())?;
-            let url = match cfg.search_priority {
-                crate::config::SearchPriority::Soundcloud => format!("scsearch1:{}", query),
-                _ => format!("ytsearch1:{}", query),
-            };
+            let prefix = crate::config::read(&app)
+                .map(|cfg| matches!(cfg.search_priority, crate::config::SearchPriority::Soundcloud))
+                .unwrap_or(false);
+            let url = if prefix { format!("scsearch1:{}", query) } else { format!("ytsearch1:{}", query) };
             run_ytdlp(&app, &id, &url, &output_dir).await
         }
     };
