@@ -6,33 +6,36 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use uuid::Uuid;
 
-use windows::Win32::{
-    Foundation::{
-        BOOL, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, PCWSTR, POINT, RECT, SIZE, WPARAM,
-        COLORREF,
-    },
-    Graphics::Gdi::{
-        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, DIB_RGB_COLORS, HDC, HBITMAP,
-        HGDIOBJ, ULW_ALPHA, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject,
-        GetDC, ReleaseDC, SelectObject, UpdateLayeredWindow,
-    },
-    System::{
-        LibraryLoader::GetModuleHandleW,
-        Memory::{GlobalLock, GlobalSize, GlobalUnlock, HGLOBAL},
-    },
-    UI::{
-        HiDpi::GetDpiForWindow,
-        Input::KeyboardAndMouse::{ReleaseCapture, SetCapture},
-        WindowsAndMessaging::{
-            CS_HREDRAW, CS_VREDRAW, CREATESTRUCTW, GWLP_USERDATA, MONITORINFO,
-            MONITOR_DEFAULTTOPRIMARY, MSG, SM_CXSCREEN, SM_CYSCREEN, SW_SHOWNOACTIVATE,
-            SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, WM_DESTROY, WM_LBUTTONDOWN,
-            WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
-            WS_EX_TOPMOST, WS_POPUP, WNDCLASSEXW, CreateWindowExW, DefWindowProcW,
-            DispatchMessageW, GetCursorPos, GetDesktopWindow, GetMessageW, GetMonitorInfoW,
-            GetSystemMetrics, GetWindowLongPtrW, GetWindowRect, MonitorFromWindow,
-            PostQuitMessage, RegisterClassExW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-            TranslateMessage,
+use windows::{
+    core::PCWSTR,
+    Win32::{
+        Foundation::{
+            BOOL, COLORREF, HANDLE, HGLOBAL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT,
+            SIZE, WPARAM,
+        },
+        Graphics::Gdi::{
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, DIB_RGB_COLORS, HDC, HBITMAP,
+            HGDIOBJ, MONITORINFO, MONITOR_DEFAULTTOPRIMARY, CreateCompatibleDC, CreateDIBSection,
+            DeleteDC, DeleteObject, GetDC, GetMonitorInfoW, MonitorFromWindow, ReleaseDC,
+            SelectObject,
+        },
+        System::{
+            LibraryLoader::GetModuleHandleW,
+            Memory::{GlobalLock, GlobalSize, GlobalUnlock},
+        },
+        UI::{
+            HiDpi::GetDpiForWindow,
+            Input::KeyboardAndMouse::{ReleaseCapture, SetCapture},
+            WindowsAndMessaging::{
+                CS_HREDRAW, CS_VREDRAW, CREATESTRUCTW, GWLP_USERDATA, MSG, SM_CXSCREEN,
+                SM_CYSCREEN, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+                ULW_ALPHA, UpdateLayeredWindow, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP,
+                WM_MOUSEMOVE, WM_NCCREATE, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+                WS_POPUP, WNDCLASSEXW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
+                GetCursorPos, GetDesktopWindow, GetMessageW, GetSystemMetrics, GetWindowLongPtrW,
+                GetWindowRect, PostQuitMessage, RegisterClassExW, SetWindowLongPtrW, SetWindowPos,
+                ShowWindow, TranslateMessage,
+            },
         },
     },
 };
