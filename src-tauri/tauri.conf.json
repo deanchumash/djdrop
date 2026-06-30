@@ -12,10 +12,10 @@
   "app": {
     "windows": [
       {
-        "label": "main",
+        "label": "circle",
         "title": "djdrop",
-        "width": 300,
-        "height": 440,
+        "width": 72,
+        "height": 72,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,

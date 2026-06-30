@@ -3,15 +3,13 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 
 interface Props {
   onDrop: (input: string) => void;
-  progress?: number; // 0–100, undefined = idle
+  progress?: number;
   onClickBody?: () => void;
-  onClickSearch?: () => void;
 }
 
-export function Circle({ onDrop, progress, onClickBody, onClickSearch }: Props) {
+export function Circle({ onDrop, progress, onClickBody }: Props) {
   const [isDragOver, setIsDragOver] = useState(false);
 
-  // Only start window drag once mouse moves; plain click still fires onClick
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     const startX = e.clientX;
@@ -43,7 +41,7 @@ export function Circle({ onDrop, progress, onClickBody, onClickSearch }: Props) 
     if (input.trim()) onDrop(input.trim());
   };
 
-  const circumference = 2 * Math.PI * 33; // r=33
+  const circumference = 2 * Math.PI * 33;
   const dashOffset = progress != null
     ? circumference * (1 - progress / 100)
     : circumference;
@@ -65,11 +63,6 @@ export function Circle({ onDrop, progress, onClickBody, onClickSearch }: Props) 
         </svg>
       ) : null}
       ↓
-      <button
-        className="search-btn"
-        onMouseDown={e => e.stopPropagation()}
-        onClick={e => { e.stopPropagation(); onClickSearch?.(); }}
-      >🔍</button>
     </div>
   );
 }

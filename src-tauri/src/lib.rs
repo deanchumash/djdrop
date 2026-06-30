@@ -7,7 +7,6 @@ mod router;
 
 use tauri::Manager;
 
-// Win32 APIs for hit-test region and decoration management (Windows only)
 #[cfg(windows)]
 mod win32 {
     #[repr(C)]
@@ -16,7 +15,6 @@ mod win32 {
     #[link(name = "gdi32")]
     extern "system" {
         pub fn CreateEllipticRgn(x1: i32, y1: i32, x2: i32, y2: i32) -> isize;
-        pub fn CreateRectRgn(x1: i32, y1: i32, x2: i32, y2: i32) -> isize;
     }
     #[link(name = "user32")]
     extern "system" {
@@ -24,7 +22,6 @@ mod win32 {
         pub fn GetWindowLongPtrW(hwnd: isize, n_index: i32) -> isize;
         pub fn SetWindowLongPtrW(hwnd: isize, n_index: i32, dw_new_long: isize) -> isize;
         pub fn SetWindowPos(hwnd: isize, hwnd_insert_after: isize, x: i32, y: i32, cx: i32, cy: i32, u_flags: u32) -> i32;
-        pub fn GetClientRect(hwnd: isize, lp_rect: *mut RECT) -> i32;
         pub fn GetDpiForWindow(hwnd: isize) -> u32;
     }
     #[link(name = "dwmapi")]
@@ -33,11 +30,12 @@ mod win32 {
     }
 }
 
-// Logical-pixel constants — must match tauri.conf.json and App.css .circle size.
-// Physical pixel values are derived at runtime via GetDpiForWindow / GetClientRect.
-const WIN_W: i32 = 300;
-const WIN_H: i32 = 440;
+// Logical size of the circle in CSS pixels — must match App.css .circle width/height.
 const CIRCLE: i32 = 72;
+
+// Logical size of the panels popup window.
+const PANELS_W: f64 = 280.0;
+const PANELS_H: f64 = 400.0;
 
 #[cfg(windows)]
 fn hwnd_of(win: &tauri::WebviewWindow) -> Option<isize> {
@@ -48,14 +46,11 @@ fn hwnd_of(win: &tauri::WebviewWindow) -> Option<isize> {
     }
 }
 
-/// Tell the DWM compositor to draw no border and no rounded corners.
-/// Must be called after every SetWindowRgn — a rectangular region causes
-/// DWM to re-enable the compositor border independently of Win32 style bits.
 #[cfg(windows)]
 fn apply_dwm_borderless(hwnd: isize) {
-    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33; // Windows 11 22000+
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
     const DWMWCP_DONOTROUND: u32 = 1;
-    const DWMWA_BORDER_COLOR: u32 = 34;             // Windows 11 22000+
+    const DWMWA_BORDER_COLOR: u32 = 34;
     const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
     unsafe {
         win32::DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &DWMWCP_DONOTROUND, 4);
@@ -63,76 +58,39 @@ fn apply_dwm_borderless(hwnd: isize) {
     }
 }
 
-/// Strip title bar / frame style bits and resize the outer window to the exact
-/// desired physical size (WIN_W × WIN_H × DPI_scale). Required because:
-///   1. tauri.conf.json decorations:false is sometimes overridden by WebView2 init.
-///   2. Tauri's width/height config is the *inner* (content) size, so with decorations
-///      the outer window is wider/taller. Stripping chrome without also resizing leaves
-///      the outer window oversized — WebView2 fills the too-large area and the CSS
-///      circle (right:0) no longer aligns with the window boundary.
-/// The explicit SetWindowPos resize fires WM_SIZE; Tauri's handler then calls
-/// WebView2 put_Bounds(0, 0, phys_w, phys_h) which correctly repositions the content.
+/// Strip any Win32 chrome that WebView2 may have added and enforce the exact
+/// desired physical size. For the 72×72 circle window this is a no-op when
+/// decorations:false is working, but keeps us safe if it isn't.
 #[cfg(windows)]
 fn strip_window_chrome(win: &tauri::WebviewWindow) {
     let Some(hwnd) = hwnd_of(win) else { return };
     const GWL_STYLE: i32 = -16;
-    // WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU
     const CHROME_BITS: isize = 0x00C00000 | 0x00040000 | 0x00020000 | 0x00010000 | 0x00080000;
-    // SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED  (no SWP_NOSIZE: set explicit size)
-    const SWP_FLAGS: u32 = 0x0002 | 0x0004 | 0x0020;
+    const SWP_FLAGS: u32 = 0x0002 | 0x0004 | 0x0020; // NOMOVE | NOZORDER | FRAMECHANGED
     unsafe {
         let dpi = win32::GetDpiForWindow(hwnd);
         let scale = if dpi == 0 { 1.0_f32 } else { dpi as f32 / 96.0 };
-        let phys_w = (WIN_W as f32 * scale).round() as i32;
-        let phys_h = (WIN_H as f32 * scale).round() as i32;
-
+        let phys_w = (CIRCLE as f32 * scale).round() as i32;
+        let phys_h = (CIRCLE as f32 * scale).round() as i32;
         let style = win32::GetWindowLongPtrW(hwnd, GWL_STYLE);
         win32::SetWindowLongPtrW(hwnd, GWL_STYLE, style & !CHROME_BITS);
         win32::SetWindowPos(hwnd, 0, 0, 0, phys_w, phys_h, SWP_FLAGS);
-
-        // Diagnostic: capture actual values so we can verify DPI/size assumptions
-        let mut after_rect = win32::RECT { left: 0, top: 0, right: 0, bottom: 0 };
-        win32::GetClientRect(hwnd, &mut after_rect);
-        let tauri_inner = win.inner_size().map(|s| format!("{}x{}", s.width, s.height)).unwrap_or_else(|_| "err".into());
-        let tauri_scale = win.scale_factor().map(|s| format!("{:.3}", s)).unwrap_or_else(|_| "err".into());
-        let msg = format!(
-            "=== djdrop win32 diag ===\nhwnd: {hwnd}\ndpi: {dpi}\nscale: {scale:.3}\nphys_w/h (computed): {phys_w}x{phys_h}\nstyle_before: {style:08x}\nclient_after_strip: {}x{}\ntauri_inner_size: {tauri_inner}\ntauri_scale_factor: {tauri_scale}\n",
-            after_rect.right, after_rect.bottom
-        );
-        let _ = std::fs::write(r"C:\Users\dank\AppData\Local\Temp\djdrop_debug.txt", &msg);
     }
     apply_dwm_borderless(hwnd);
 }
 
-/// Restrict mouse hit-testing to the circle (panels closed) or full window (panels open).
-/// Uses physical pixel sizes from GetClientRect / GetDpiForWindow so the region matches
-/// the CSS layout at any DPI scaling factor.
+/// Apply an elliptic hit-test region to the circle window.
+/// The circle window IS 72×72 so the ellipse is simply (0, 0, w, h) —
+/// no edge-offset calculation needed, eliminating the alignment issues
+/// that plagued the old single-window approach.
 #[cfg(windows)]
-fn apply_window_region(win: &tauri::WebviewWindow, panels_open: bool) {
+fn apply_circle_region(win: &tauri::WebviewWindow) {
     let Some(hwnd) = hwnd_of(win) else { return };
     unsafe {
-        let mut rect = win32::RECT { left: 0, top: 0, right: 0, bottom: 0 };
-        win32::GetClientRect(hwnd, &mut rect);
-        let w = rect.right;
-        let h = rect.bottom;
-
-        // Scale the logical CIRCLE constant to physical pixels via DPI
         let dpi = win32::GetDpiForWindow(hwnd);
-        let circle_phys = (CIRCLE as f32 * dpi as f32 / 96.0).round() as i32;
-
-        // Append region info to diagnostic file
-        let extra = format!(
-            "apply_window_region panels_open={panels_open}: client={w}x{h} dpi={dpi} circle_phys={circle_phys}\n"
-        );
-        if let Ok(existing) = std::fs::read_to_string(r"C:\Users\dank\AppData\Local\Temp\djdrop_debug.txt") {
-            let _ = std::fs::write(r"C:\Users\dank\AppData\Local\Temp\djdrop_debug.txt", existing + &extra);
-        }
-
-        let rgn = if panels_open {
-            win32::CreateRectRgn(0, 0, w, h)
-        } else {
-            win32::CreateEllipticRgn(w - circle_phys, h - circle_phys, w, h)
-        };
+        let scale = if dpi == 0 { 1.0_f32 } else { dpi as f32 / 96.0 };
+        let phys = (CIRCLE as f32 * scale).round() as i32;
+        let rgn = win32::CreateEllipticRgn(0, 0, phys, phys);
         win32::SetWindowRgn(hwnd, rgn, 1);
     }
     apply_dwm_borderless(hwnd);
@@ -168,13 +126,30 @@ async fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-/// Called from React whenever any panel opens or closes.
+/// Toggle the panels popup. If hidden, position it flush above/right of the
+/// circle window and show it. If visible, hide it.
 #[tauri::command]
-fn set_panels_open(app: tauri::AppHandle, open: bool) {
-    #[cfg(windows)]
-    if let Some(win) = app.get_webview_window("main") {
-        apply_window_region(&win, open);
+fn toggle_panels(app: tauri::AppHandle) {
+    let Some(panels) = app.get_webview_window("panels") else { return };
+    let Some(circle) = app.get_webview_window("circle") else { return };
+
+    if panels.is_visible().unwrap_or(false) {
+        let _ = panels.hide();
+        return;
     }
+
+    // Position panels: right-aligned with the circle, sitting just above it.
+    if let (Ok(pos), Ok(size)) = (circle.outer_position(), circle.outer_size()) {
+        let scale = circle.scale_factor().unwrap_or(1.0);
+        let pw = (PANELS_W * scale).round() as i32;
+        let ph = (PANELS_H * scale).round() as i32;
+        let x = (pos.x + size.width as i32 - pw).max(0);
+        let y = (pos.y - ph).max(0);
+        let _ = panels.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+
+    let _ = panels.show();
+    let _ = panels.set_focus();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -183,18 +158,36 @@ pub fn run() {
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
-            get_config, save_config, start_download, save_credential, quit_app, set_panels_open,
+            get_config, save_config, start_download, save_credential, quit_app, toggle_panels,
         ])
         .setup(|app| {
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_decorations(false);
-                let _ = win.set_ignore_cursor_events(false);
+            // Circle window: small transparent circle, elliptic hit-test region.
+            if let Some(circle) = app.get_webview_window("circle") {
+                let _ = circle.set_decorations(false);
                 #[cfg(windows)]
                 {
-                    strip_window_chrome(&win);
-                    apply_window_region(&win, false);
+                    strip_window_chrome(&circle);
+                    apply_circle_region(&circle);
                 }
             }
+
+            // Panels window: created programmatically so it starts hidden.
+            // Not transparent — avoids all the SetWindowRgn/DWM issues.
+            tauri::WebviewWindowBuilder::new(
+                app,
+                "panels",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("djdrop")
+            .inner_size(PANELS_W, PANELS_H)
+            .decorations(false)
+            .always_on_top(true)
+            .resizable(false)
+            .skip_taskbar(true)
+            .drag_drop_enabled(false)
+            .visible(false)
+            .build()?;
+
             Ok(())
         })
         .run(tauri::generate_context!())
