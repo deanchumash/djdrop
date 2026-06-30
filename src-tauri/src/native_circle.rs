@@ -1,6 +1,6 @@
-/// Pure Win32 layered window for the circle — no WebView2.
-/// Per-pixel alpha via UpdateLayeredWindow; raw-vtable IDropTarget for browser URL drops.
 #![cfg(windows)]
+//! Pure Win32 layered window for the circle — no WebView2.
+//! Per-pixel alpha via UpdateLayeredWindow; raw-vtable IDropTarget for browser URL drops.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, Ordering};
