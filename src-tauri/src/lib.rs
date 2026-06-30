@@ -9,13 +9,6 @@ use tauri::Manager;
 
 #[cfg(windows)]
 mod win32 {
-    #[repr(C)]
-    pub struct RECT { pub left: i32, pub top: i32, pub right: i32, pub bottom: i32 }
-
-    #[link(name = "gdi32")]
-    extern "system" {
-        pub fn CreateEllipticRgn(x1: i32, y1: i32, x2: i32, y2: i32) -> isize;
-    }
     #[link(name = "user32")]
     extern "system" {
         pub fn SetWindowRgn(hwnd: isize, hrgn: isize, redraw: i32) -> i32;
@@ -79,19 +72,15 @@ fn strip_window_chrome(win: &tauri::WebviewWindow) {
     apply_dwm_borderless(hwnd);
 }
 
-/// Apply an elliptic hit-test region to the circle window.
-/// The circle window IS 72×72 so the ellipse is simply (0, 0, w, h) —
-/// no edge-offset calculation needed, eliminating the alignment issues
-/// that plagued the old single-window approach.
+/// Remove any Win32 region so the full 72×72 window is visible and apply DWM
+/// borderless styling. Visual circle shape comes from CSS border-radius on the
+/// transparent window — no SetWindowRgn needed (and it was clipping the circle).
 #[cfg(windows)]
 fn apply_circle_region(win: &tauri::WebviewWindow) {
     let Some(hwnd) = hwnd_of(win) else { return };
     unsafe {
-        let dpi = win32::GetDpiForWindow(hwnd);
-        let scale = if dpi == 0 { 1.0_f32 } else { dpi as f32 / 96.0 };
-        let phys = (CIRCLE as f32 * scale).round() as i32;
-        let rgn = win32::CreateEllipticRgn(0, 0, phys, phys);
-        win32::SetWindowRgn(hwnd, rgn, 1);
+        // NULL region = remove any existing region restriction
+        win32::SetWindowRgn(hwnd, 0, 1);
     }
     apply_dwm_borderless(hwnd);
 }
@@ -161,9 +150,22 @@ pub fn run() {
             get_config, save_config, start_download, save_credential, quit_app, toggle_panels,
         ])
         .setup(|app| {
-            // Circle window: small transparent circle, elliptic hit-test region.
+            // Circle window: small transparent circle at bottom-right of primary monitor.
             if let Some(circle) = app.get_webview_window("circle") {
                 let _ = circle.set_decorations(false);
+                // Position at bottom-right corner, above the taskbar.
+                if let Some(monitor) = circle.primary_monitor().ok().flatten() {
+                    let mpos = monitor.position();
+                    let msize = monitor.size();
+                    let scale = circle.scale_factor().unwrap_or(1.0);
+                    let pw = (CIRCLE as f64 * scale).round() as i32;
+                    let ph = (CIRCLE as f64 * scale).round() as i32;
+                    let margin = (12.0 * scale).round() as i32;
+                    let taskbar = (48.0 * scale).round() as i32;
+                    let x = mpos.x + msize.width as i32 - pw - margin;
+                    let y = mpos.y + msize.height as i32 - ph - taskbar;
+                    let _ = circle.set_position(tauri::PhysicalPosition::new(x, y));
+                }
                 #[cfg(windows)]
                 {
                     strip_window_chrome(&circle);
