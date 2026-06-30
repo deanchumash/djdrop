@@ -57,7 +57,6 @@ const DVASPECT_CONTENT: u32 = 1;
 const CF_UNICODETEXT: u16 = 13;
 const CF_TEXT: u16 = 1;
 const S_OK: i32 = 0;
-const COINIT_APARTMENTTHREADED: u32 = 0x2;
 
 #[repr(C)]
 #[derive(PartialEq)]
@@ -110,8 +109,8 @@ struct PointlRaw {
 
 #[link(name = "ole32")]
 extern "system" {
-    fn CoInitializeEx(reserved: *const c_void, coinit: u32) -> i32;
-    fn CoUninitialize();
+    fn OleInitialize(reserved: *const c_void) -> i32;
+    fn OleUninitialize();
     fn RegisterDragDrop(hwnd: HWND, pdt: *mut DropTargetCom) -> i32;
     fn RevokeDragDrop(hwnd: HWND) -> i32;
     fn ReleaseStgMedium(p: *mut StgMediumRaw);
@@ -493,7 +492,9 @@ fn state_of(hwnd: HWND) -> *mut CircleState {
 
 pub fn run(app: tauri::AppHandle) {
     unsafe {
-        CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED);
+        // OleInitialize initializes COM (apartment-threaded) AND the OLE subsystem
+        // required for RegisterDragDrop. CoInitializeEx alone is not sufficient.
+        OleInitialize(std::ptr::null());
 
         let hmod = GetModuleHandleW(None).unwrap_or_default();
         let class_name: Vec<u16> = "djdrop_circle\0".encode_utf16().collect();
@@ -555,7 +556,7 @@ pub fn run(app: tauri::AppHandle) {
         }
 
         CIRCLE_HWND.store(0, Ordering::Relaxed);
-        CoUninitialize();
+        OleUninitialize();
     }
 }
 
