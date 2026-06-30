@@ -10,7 +10,9 @@ New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
 function Get-LatestGitHubAsset {
     param([string]$repo, [string]$pattern)
-    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"
+    $headers = @{}
+    if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
+    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers $headers
     $asset = $release.assets | Where-Object { $_.name -like $pattern } | Select-Object -First 1
     if (-not $asset) { throw "No asset matching '$pattern' found in $repo latest release" }
     return $asset.browser_download_url

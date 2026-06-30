@@ -31,6 +31,8 @@ jobs:
       - name: Fetch binaries (yt-dlp, ffmpeg, spotdl)
         run: .\scripts\fetch-binaries.ps1
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build MSI
         run: npm run tauri -- build
