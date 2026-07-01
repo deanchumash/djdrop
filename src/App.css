@@ -125,6 +125,35 @@ html, body, #root {
 .queue-item__status { color: #888; font-size: 11px; }
 .queue-item__start { background: none; border: none; color: #4ade80; cursor: pointer; font-size: 14px; }
 
+@keyframes queue-spin {
+  to { transform: rotate(360deg); }
+}
+
+.queue-item__spinner {
+  display: block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(74, 222, 128, 0.25);
+  border-top-color: #4ade80;
+  border-radius: 50%;
+  animation: queue-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.queue-item__source {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  flex-shrink: 0;
+}
+
+.queue-item__source-text {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 /* Settings panel */
 .settings-panel {
   flex: 1;
