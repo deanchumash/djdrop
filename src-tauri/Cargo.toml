@@ -27,6 +27,7 @@ anyhow = "1"
 dirs = "5"
 aubio-rs = "0.2"
 rustfft = "6"
+reqwest = { version = "0.12", features = ["json", "cookies"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
