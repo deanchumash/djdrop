@@ -2,7 +2,7 @@ use crate::router::DownloadSource;
 use serde::Serialize;
 use std::process::Stdio;
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -82,6 +82,14 @@ pub async fn run_download(app: AppHandle, id: String, source: DownloadSource, in
 }
 
 async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Result<(), String> {
+    // Check for SC purchase-link gate (gate.sc / hypeddit / dropbox / gdrive / direct file)
+    // Only for direct SC URLs, not yt-dlp search prefixes
+    if url.contains("soundcloud.com") {
+        if let Some(gate_url) = crate::gate::check_sc_for_gate(url).await {
+            return run_http_download(app, id, &gate_url, output_dir, "soundcloud").await;
+        }
+    }
+
     let ytdlp_bin = crate::binaries::ytdlp(app)?;
     let ffmpeg_dir = crate::binaries::ffmpeg_dir(app)?
         .to_string_lossy()
@@ -144,7 +152,11 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
         id: id.to_string(),
         file_path: file_path.clone(),
         track_name,
-        source: "youtube".into(),
+        source: if url.contains("soundcloud.com") || url.starts_with("scsearch") {
+            "soundcloud".into()
+        } else {
+            "youtube".into()
+        },
     });
 
     crate::analyzer::analyze(app, id, &file_path).await;
@@ -196,6 +208,96 @@ async fn run_qobuz(app: &AppHandle, id: &str, url: &str, output_dir: &str, usern
     let _ = app.emit("download:done", DonePayload {
         id: id.to_string(), file_path: file_path.clone(), track_name, source: "qobuz".into()
     });
+    crate::analyzer::analyze(app, id, &file_path).await;
+    Ok(())
+}
+
+/// Stream-download a direct URL (Dropbox, Google Drive, S3, etc.) to output_dir.
+async fn run_http_download(
+    app: &AppHandle,
+    id: &str,
+    url: &str,
+    output_dir: &str,
+    source: &str,
+) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP download failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let total_bytes = resp.content_length();
+
+    // Derive filename: Content-Disposition header, then URL path
+    let filename = {
+        let from_cd = resp
+            .headers()
+            .get("content-disposition")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|cd| {
+                cd.find("filename=").map(|i| {
+                    cd[i + 9..]
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                        .split('"')
+                        .next()
+                        .unwrap_or("")
+                        .to_string()
+                })
+            });
+        match from_cd {
+            Some(n) if !n.is_empty() => n,
+            _ => resp
+                .url()
+                .path_segments()
+                .and_then(|segs| segs.last())
+                .and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) })
+                .unwrap_or_else(|| format!("{}.mp3", id)),
+        }
+    };
+
+    let file_path = format!("{}/{}", output_dir, filename);
+    let mut file = tokio::fs::File::create(&file_path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut downloaded: u64 = 0;
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        downloaded += chunk.len() as u64;
+        if let Some(total) = total_bytes {
+            let pct = (downloaded * 100 / total) as u8;
+            let _ = app.emit(
+                "download:progress",
+                ProgressPayload { id: id.to_string(), percent: pct },
+            );
+        }
+    }
+
+    let track_name = std::path::Path::new(&file_path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| id.to_string());
+
+    let _ = app.emit(
+        "download:done",
+        DonePayload {
+            id: id.to_string(),
+            file_path: file_path.clone(),
+            track_name,
+            source: source.to_string(),
+        },
+    );
+
     crate::analyzer::analyze(app, id, &file_path).await;
     Ok(())
 }
