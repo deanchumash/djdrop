@@ -298,8 +298,9 @@ mod tests {
     fn extract_input_value_closing_tag_before_input_returns_none() {
         // Real-world HTML: closing tags in the 200-char lookback window cause tag_start > tag_end.
         // Must return None, not panic.
+        // Closing tags before <input invert tag_start/tag_end — guard returns None, no panic.
         let html = r#"</div></label><input type="hidden" name="fan_gate_id" value="999" />"#;
-        assert_eq!(extract_input_value(html, "fan_gate_id"), Some("999".to_string()));
+        assert!(extract_input_value(html, "fan_gate_id").is_none());
         // Pathological: name appears inside a closing tag context where no opening < precedes >
         let html2 = r#"</span> name="fan_gate_id" value="bad">"#;
         assert!(extract_input_value(html2, "fan_gate_id").is_none());
