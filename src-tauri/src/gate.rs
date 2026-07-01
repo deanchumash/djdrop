@@ -43,6 +43,7 @@ fn extract_input_value(html: &str, name: &str) -> Option<String> {
     // Find the <input tag boundary
     let tag_start = chunk.rfind('<').unwrap_or(0);
     let tag_end = chunk.find('>').unwrap_or(chunk.len());
+    if tag_start >= tag_end { return None; }
     let tag = &chunk[tag_start..tag_end];
     for q in ['"', '\''] {
         let prefix = format!("value={}", q);
@@ -291,6 +292,17 @@ mod tests {
     fn extract_input_value_double_quote() {
         let html = r#"<input type="hidden" name="fan_gate_id" id="fan_gate_id" value="2205464" />"#;
         assert_eq!(extract_input_value(html, "fan_gate_id"), Some("2205464".to_string()));
+    }
+
+    #[test]
+    fn extract_input_value_closing_tag_before_input_returns_none() {
+        // Real-world HTML: closing tags in the 200-char lookback window cause tag_start > tag_end.
+        // Must return None, not panic.
+        let html = r#"</div></label><input type="hidden" name="fan_gate_id" value="999" />"#;
+        assert_eq!(extract_input_value(html, "fan_gate_id"), Some("999".to_string()));
+        // Pathological: name appears inside a closing tag context where no opening < precedes >
+        let html2 = r#"</span> name="fan_gate_id" value="bad">"#;
+        assert!(extract_input_value(html2, "fan_gate_id").is_none());
     }
 
     #[test]
