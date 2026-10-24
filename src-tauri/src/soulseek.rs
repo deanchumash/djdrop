@@ -121,6 +121,11 @@ async fn spawn(app: &AppHandle, username: &str, password: &str) -> Result<Slskd,
     let downloads = data.join("downloads");
     let incomplete = data.join("incomplete");
     for dir in [&downloads, &incomplete] { std::fs::create_dir_all(dir).map_err(|e| e.to_string())?; }
+    // slskd validates its web content directory (relative to the exe) even with
+    // the UI disabled; the installer ships only slskd.exe, so create it empty.
+    if let Some(dir) = exe.parent() {
+        std::fs::create_dir_all(dir.join("wwwroot")).map_err(|e| format!("cannot create slskd wwwroot: {e}"))?;
+    }
     kill_stale(&data).await;
 
     let http_port = free_port("127.0.0.1")?;
