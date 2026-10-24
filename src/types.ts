@@ -33,6 +33,8 @@ export interface DownloadItem {
   track_name?: string;
   file_path?: string;
   source?: string;
+  format?: string;
+  bitrate?: number;
   bpm?: number;
   key?: string;
   progress?: number;
@@ -42,7 +44,7 @@ export interface DownloadItem {
 
 // IPC event payloads
 export interface ProgressPayload { id: string; percent: number }
-export interface DonePayload { id: string; file_path: string; track_name: string; source: string }
+export interface DonePayload { id: string; file_path: string; track_name: string; source: string; format: string; bitrate?: number | null }
 export interface ErrorPayload { id: string; message: string }
 export interface AnalysisDonePayload { id: string; bpm: number; key: string }
 export interface SearchResultItem { title: string; url: string; source: string }

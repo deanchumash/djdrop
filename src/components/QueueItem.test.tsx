@@ -47,4 +47,19 @@ describe('QueueItem', () => {
     rerender(<QueueItem item={{ ...item, status: 'done' }} />);
     expect(screen.queryByRole('alert')).toBeNull();
   });
+
+  it('shows the final source icon and a filetype badge, with bitrate only for MP3', () => {
+    const done: DownloadItem = { ...item, status: 'done', source: 'bandcamp', format: 'MP3', bitrate: 320 };
+    const { rerender } = render(<QueueItem item={done} />);
+    expect(screen.getByLabelText('Bandcamp')).toBeTruthy();
+    expect(screen.getByText('MP3 320')).toBeTruthy();
+
+    rerender(<QueueItem item={{ ...done, source: 'youtube', format: 'FLAC', bitrate: 900 }} />);
+    expect(screen.getByLabelText('YouTube')).toBeTruthy();
+    expect(screen.getByText('FLAC')).toBeTruthy();
+    expect(screen.queryByText(/900/)).toBeNull();
+
+    rerender(<QueueItem item={{ ...done, bitrate: undefined }} />);
+    expect(screen.getByText('MP3')).toBeTruthy();
+  });
 });

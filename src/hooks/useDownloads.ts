@@ -33,7 +33,11 @@ export function useDownloads() {
       listen<DonePayload>('download:done', ({ payload }) => {
         setDownloads(prev => prev.map(d =>
           d.id === payload.id
-            ? { ...d, file_path: payload.file_path, track_name: payload.track_name, source: payload.source, status: 'analyzing' }
+            ? {
+                ...d,
+                file_path: payload.file_path, track_name: payload.track_name, source: payload.source,
+                format: payload.format, bitrate: payload.bitrate ?? undefined, status: 'analyzing',
+              }
             : d
         ));
       }),

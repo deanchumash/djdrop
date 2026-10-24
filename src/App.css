@@ -116,7 +116,7 @@ html, body, #root {
 
 .queue-item {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) repeat(3, auto);
+  grid-template-columns: 18px minmax(0, 1fr) repeat(4, auto);
   align-items: center;
   column-gap: 6px;
   row-gap: 3px;
@@ -126,6 +126,10 @@ html, body, #root {
 .queue-item--error { color: #f87171; }
 .queue-item__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-item__bpm, .queue-item__key { color: #4ade80; font-size: 11px; }
+.queue-item__format {
+  color: #a1a1aa; font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
+  border: 1px solid #3f3f5a; border-radius: 3px; padding: 0 3px; white-space: nowrap;
+}
 .queue-item__actions { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 .queue-item__status { color: #a1a1aa; font-size: 11px; white-space: nowrap; }
 .queue-item--error .queue-item__status { color: #f87171; }

@@ -46,6 +46,13 @@ function SourceLogo({ source }: { source?: string }) {
           <path d="M14.5 14.5L18 18" stroke="white" strokeWidth="2" strokeLinecap="round" />
         </svg>
       );
+    case 'bandcamp':
+      return (
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-label="Bandcamp">
+          <circle cx="12" cy="12" r="12" fill="#1DA0C3" />
+          <path d="M5 16.5L9.5 7.5H19L14.5 16.5Z" fill="white" />
+        </svg>
+      );
     case 'bpmsupreme':
       return <span className="queue-item__source-text" style={{ color: '#a855f7' }}>B</span>;
     case 'clubkillers':
@@ -80,6 +87,11 @@ export function QueueItem({ item, onStart, keyNotation = 'musical' }: Props) {
         <SourceLogo source={item.source} />
       </span>
       <span className="queue-item__name" title={name}>{name}</span>
+      {item.format
+        ? <span className="queue-item__format" title="File type">
+            {item.format === 'MP3' && item.bitrate ? `MP3 ${item.bitrate}` : item.format}
+          </span>
+        : null}
       {item.bpm ? <span className="queue-item__bpm">{item.bpm}</span> : null}
       {item.key
         ? <span className="queue-item__key">

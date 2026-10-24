@@ -4,6 +4,7 @@ mod config;
 mod credentials;
 mod downloader;
 mod gate;
+mod media;
 mod router;
 #[cfg(windows)]
 mod native_circle;

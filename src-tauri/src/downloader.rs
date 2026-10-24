@@ -12,7 +12,16 @@ pub struct ProgressPayload { pub id: String, pub percent: u8 }
 #[derive(Clone, Serialize)]
 struct StartedPayload { id: String }
 #[derive(Clone, Serialize)]
-pub struct DonePayload { pub id: String, pub file_path: String, pub track_name: String, pub source: String }
+pub struct DonePayload {
+    pub id: String,
+    pub file_path: String,
+    pub track_name: String,
+    pub source: String,
+    /// Upper-case file extension, e.g. "MP3" or "FLAC".
+    pub format: String,
+    /// Average bitrate in kbps as measured by ffprobe.
+    pub bitrate: Option<u32>,
+}
 #[derive(Clone, Serialize)]
 pub struct ErrorPayload { pub id: String, pub message: String }
 
@@ -167,26 +176,8 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
         return Err("yt-dlp did not report output filepath".into());
     }
 
-    let track_name = std::path::Path::new(&file_path)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| url.to_string());
-
-    #[cfg(windows)]
-    crate::native_circle::download_finished(id);
-    let _ = app.emit("download:done", DonePayload {
-        id: id.to_string(),
-        file_path: file_path.clone(),
-        track_name,
-        source: if url.contains("soundcloud.com") || url.starts_with("scsearch") {
-            "soundcloud".into()
-        } else {
-            "youtube".into()
-        },
-    });
-
-    crate::analyzer::analyze(app, id, &file_path).await;
-
+    let source = if url.contains("soundcloud.com") || url.starts_with("scsearch") { "soundcloud" } else { "youtube" };
+    finish_download(app, id, &file_path, Some(source)).await;
     Ok(())
 }
 
@@ -214,16 +205,9 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
                 format!("Primary sources: {primary_error}; Bandcamp fallback: {bandcamp_error}")
             })?,
         };
-        let track_name = std::path::Path::new(&file_path)
-            .file_stem().map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-
-        #[cfg(windows)]
-        crate::native_circle::download_finished(id);
-        let _ = app.emit("download:done", DonePayload {
-            id: id.to_string(), file_path: file_path.clone(), track_name, source: "spotify".into()
-        });
-        crate::analyzer::analyze(app, id, &file_path).await;
+        // spotDL records the URL it actually downloaded from in the comment tag,
+        // so the icon reflects the final source rather than the Spotify input.
+        finish_download(app, id, &file_path, None).await;
         Ok(())
     }.await;
     let _ = std::fs::remove_dir_all(job_dir);
@@ -244,20 +228,20 @@ async fn spotdl_attempt(
     let output = {
         let mut cmd = Command::new(spotdl_bin);
         cmd.args(&args).arg("--print-errors");
-        cmd.env("PATH", tools_path);
+        // Rich wraps console output at 80 columns when it is not a terminal,
+        // which would split the error message across lines.
+        cmd.env("PATH", tools_path).env("COLUMNS", "1000");
         #[cfg(windows)] cmd.creation_flags(CREATE_NO_WINDOW);
         cmd.output().await.map_err(|e| format!("spotdl not found at {:?}: {e}", spotdl_bin))?
     };
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let message = stderr.lines().rev().find(|s| !s.trim().is_empty())
-        .or_else(|| stdout.lines().rev().find(|s| !s.trim().is_empty()))
-        .unwrap_or("spotdl exited with error").trim();
+    let failure = spotdl_failure_message(&stderr).or_else(|| spotdl_failure_message(&stdout));
     if !output.status.success() {
-        return Err(message.to_string());
+        return Err(failure.unwrap_or_else(|| "spotdl exited with error".into()));
     }
-    move_spotdl_outputs(attempt_dir, output_dir).map_err(|e| format!("{e}: {message}"))
+    move_spotdl_outputs(attempt_dir, output_dir).map_err(|e| failure.unwrap_or(e))
 }
 
 fn move_spotdl_outputs(job_dir: &std::path::Path, output_dir: &std::path::Path) -> Result<String, String> {
@@ -290,16 +274,7 @@ async fn run_qobuz(app: &AppHandle, id: &str, url: &str, output_dir: &str, usern
     if !status.success() { return Err("qobuz-dlp exited with error".into()); }
 
     let file_path = newest_file_in(output_dir, &["flac", "mp3"])?;
-    let track_name = std::path::Path::new(&file_path)
-        .file_stem().map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-
-    #[cfg(windows)]
-    crate::native_circle::download_finished(id);
-    let _ = app.emit("download:done", DonePayload {
-        id: id.to_string(), file_path: file_path.clone(), track_name, source: "qobuz".into()
-    });
-    crate::analyzer::analyze(app, id, &file_path).await;
+    finish_download(app, id, &file_path, Some("qobuz")).await;
     Ok(())
 }
 
@@ -375,24 +350,7 @@ async fn run_http_download(
         }
     }
 
-    let track_name = std::path::Path::new(&file_path)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| id.to_string());
-
-    #[cfg(windows)]
-    crate::native_circle::download_finished(id);
-    let _ = app.emit(
-        "download:done",
-        DonePayload {
-            id: id.to_string(),
-            file_path: file_path.clone(),
-            track_name,
-            source: source.to_string(),
-        },
-    );
-
-    crate::analyzer::analyze(app, id, &file_path).await;
+    finish_download(app, id, &file_path, Some(source)).await;
     Ok(())
 }
 
@@ -403,6 +361,42 @@ fn emit_progress(app: &AppHandle, id: &str, percent: u8) {
         id: id.to_string(),
         percent,
     });
+}
+
+/// Probe the finished file, announce it to the frontend, then analyze it.
+/// `source` is the provider the audio actually came from; `None` derives it
+/// from the source URL spotDL wrote into the file's comment tag.
+async fn finish_download(app: &AppHandle, id: &str, file_path: &str, source: Option<&str>) {
+    let info = crate::media::probe(app, file_path).await;
+    let source = source.map(str::to_string)
+        .or_else(|| info.source_url.as_deref().and_then(crate::media::source_from_url).map(str::to_string))
+        .unwrap_or_else(|| "spotify".into());
+    let track_name = std::path::Path::new(file_path)
+        .file_stem().map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    #[cfg(windows)]
+    crate::native_circle::download_finished(id);
+    let _ = app.emit("download:done", DonePayload {
+        id: id.to_string(),
+        file_path: file_path.to_string(),
+        track_name,
+        source,
+        format: info.format,
+        bitrate: info.bitrate,
+    });
+    crate::analyzer::analyze(app, id, file_path).await;
+}
+
+/// Pick the actionable line out of spotDL's output: the last "...Error: ..."
+/// line, without the leading "<spotify url> - " spotDL prefixes it with.
+fn spotdl_failure_message(output: &str) -> Option<String> {
+    let line = output.lines().rev().map(str::trim).find(|l| l.contains("Error:"))?;
+    let message = match line.split_once(" - ") {
+        Some((prefix, rest)) if prefix.starts_with("https://open.spotify.com/") => rest,
+        _ => line,
+    };
+    Some(message.trim().to_string())
 }
 
 fn parse_ytdlp_progress(line: &str) -> Option<u8> {
@@ -456,6 +450,17 @@ mod tests {
         assert_eq!(std::path::Path::new(&path), output_dir.join("new.mp3"));
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         assert_eq!(std::fs::read(output_dir.join("older.mp3")).unwrap(), b"older");
+    }
+    #[test]
+    fn spotdl_failure_is_the_error_line_without_the_spotify_url_prefix() {
+        let output = "Processing query: https://open.spotify.com/track/x\n\
+            YouTube Music returned no usable results\n\
+            https://open.spotify.com/track/x - LookupError: No results found for song: Lizzy Ashliegh - Remedy\n";
+        assert_eq!(
+            spotdl_failure_message(output).as_deref(),
+            Some("LookupError: No results found for song: Lizzy Ashliegh - Remedy"),
+        );
+        assert_eq!(spotdl_failure_message("Downloaded \"A - B\": https://soundcloud.com/a"), None);
     }
     #[test]
     fn parse_progress_extracts_percent() {
