@@ -19,13 +19,13 @@ function Get-LatestGitHubAsset {
 }
 
 # yt-dlp standalone exe
-Write-Host "[1/3] Downloading yt-dlp..."
+Write-Host "[1/4] Downloading yt-dlp..."
 $ytdlpUrl = Get-LatestGitHubAsset -repo "yt-dlp/yt-dlp" -pattern "yt-dlp.exe"
 Invoke-WebRequest -Uri $ytdlpUrl -OutFile "$binDir\yt-dlp.exe" -UseBasicParsing
 Write-Host "      yt-dlp: $([math]::Round((Get-Item "$binDir\yt-dlp.exe").Length / 1MB))MB"
 
 # ffmpeg essentials build (includes libmp3lame)
-Write-Host "[2/3] Downloading ffmpeg (gyan.dev essentials)..."
+Write-Host "[2/4] Downloading ffmpeg (gyan.dev essentials)..."
 $ffmpegZip = "$env:TEMP\ffmpeg-essentials-djdrop.zip"
 Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $ffmpegZip -UseBasicParsing
 $extractDir = "$env:TEMP\ffmpeg-essentials-djdrop"
@@ -35,15 +35,46 @@ $ffmpegExe = Get-ChildItem $extractDir -Recurse -Filter "ffmpeg.exe" |
     Where-Object { $_.DirectoryName -like "*\bin" } |
     Select-Object -First 1
 Copy-Item $ffmpegExe.FullName "$binDir\ffmpeg.exe"
+Copy-Item (Join-Path $ffmpegExe.DirectoryName "ffprobe.exe") "$binDir\ffprobe.exe"
 Remove-Item $extractDir -Recurse -Force
 Remove-Item $ffmpegZip -Force
-Write-Host "      ffmpeg: $([math]::Round((Get-Item "$binDir\ffmpeg.exe").Length / 1MB))MB"
+Write-Host "      ffmpeg + ffprobe: $([math]::Round((Get-Item "$binDir\ffmpeg.exe").Length / 1MB))MB"
 
-# spotdl standalone exe
-Write-Host "[3/3] Downloading spotdl..."
-$spotdlUrl = Get-LatestGitHubAsset -repo "spotDL/spotify-downloader" -pattern "spotdl-*-win32.exe"
-Invoke-WebRequest -Uri $spotdlUrl -OutFile "$binDir\spotdl.exe" -UseBasicParsing
+# Upstream's Windows exe freezes an old yt-dlp. Build the latest spotDL
+# release with a current yt-dlp so Spotify audio survives YouTube changes.
+Write-Host "[3/4] Building spotdl with current yt-dlp..."
+$headers = @{}
+if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
+$release = Invoke-RestMethod "https://api.github.com/repos/spotDL/spotify-downloader/releases/latest" -Headers $headers
+$version = $release.tag_name.TrimStart('v')
+$buildDir = "$env:TEMP\djdrop-spotdl-build"
+if (Test-Path $buildDir) { Remove-Item $buildDir -Recurse -Force }
+git clone --quiet --depth 1 --branch $release.tag_name "https://github.com/spotDL/spotify-downloader.git" $buildDir
+if ($LASTEXITCODE -ne 0) { throw "Failed to fetch spotdl $version source" }
+python -m venv "$buildDir\.venv"
+if ($LASTEXITCODE -ne 0) { throw "Failed to create spotdl build environment" }
+$python = "$buildDir\.venv\Scripts\python.exe"
+& $python -m pip install --quiet "spotdl==$version" "yt-dlp[default]" "pyinstaller>=6.11.1,<7"
+if ($LASTEXITCODE -ne 0) { throw "Failed to install spotdl build dependencies" }
+Push-Location $buildDir
+try {
+    & $python scripts/build.py
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build spotdl" }
+    Copy-Item "dist\spotdl-$version-win32.exe" "$binDir\spotdl.exe"
+} finally {
+    Pop-Location
+    Remove-Item $buildDir -Recurse -Force
+}
 Write-Host "      spotdl: $([math]::Round((Get-Item "$binDir\spotdl.exe").Length / 1MB))MB"
+
+# yt-dlp (and spotdl's internal yt-dlp) need a JS runtime for YouTube.
+Write-Host "[4/4] Downloading Deno..."
+$denoUrl = Get-LatestGitHubAsset -repo "denoland/deno" -pattern "deno-x86_64-pc-windows-msvc.zip"
+$denoZip = "$env:TEMP\deno-djdrop.zip"
+Invoke-WebRequest -Uri $denoUrl -OutFile $denoZip -UseBasicParsing
+Expand-Archive -Path $denoZip -DestinationPath $binDir -Force
+Remove-Item $denoZip -Force
+Write-Host "      deno: $([math]::Round((Get-Item "$binDir\deno.exe").Length / 1MB))MB"
 
 Write-Host ""
 Write-Host "NOTE: keyfinder-cli has no prebuilt Windows binary."

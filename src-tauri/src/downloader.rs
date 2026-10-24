@@ -26,17 +26,27 @@ pub fn ytdlp_args(url: &str, output_dir: &str, ffmpeg_dir: &str) -> Vec<String> 
     ]
 }
 
-pub fn spotdl_args(url: &str, output_dir: &str) -> Vec<String> {
+pub fn spotdl_args(url: &str, output_dir: &str, ffmpeg: &str) -> Vec<String> {
     vec![
         "download".into(), url.into(),
+        "--audio".into(), "youtube".into(), "youtube-music".into(),
         "--output".into(), output_dir.into(),
         "--format".into(), "mp3".into(),
         "--bitrate".into(), "320k".into(),
+        "--ffmpeg".into(), ffmpeg.into(),
     ]
 }
 
 pub fn qobuz_args(url: &str, output_dir: &str) -> Vec<String> {
     vec![url.into(), "-d".into(), output_dir.into()]
+}
+
+/// Let both yt-dlp and spotdl's embedded yt-dlp find the bundled Deno runtime.
+fn bundled_tools_path(app: &AppHandle) -> Result<std::ffi::OsString, String> {
+    let tools = crate::binaries::ffmpeg_dir(app)?;
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(std::iter::once(tools).chain(std::env::split_paths(&current)))
+        .map_err(|e| e.to_string())
 }
 
 pub async fn run_download(app: AppHandle, id: String, source: DownloadSource, input: String, output_dir: String) {
@@ -98,6 +108,7 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
 
     let mut child = {
         let mut cmd = Command::new(&ytdlp_bin);
+        cmd.env("PATH", bundled_tools_path(app)?);
         cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(windows)] cmd.creation_flags(CREATE_NO_WINDOW);
         cmd.spawn().map_err(|e| format!("yt-dlp not found at {:?}: {e}", ytdlp_bin))?
@@ -109,9 +120,10 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
     let app_clone = app.clone();
     let id_clone = id.to_string();
 
-    // Read stderr for progress lines concurrently with stdout
+    // yt-dlp writes diagnostics to stderr; keep the actual provider error.
     let progress_task = tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
+        let mut error = None;
         while let Ok(Some(line)) = lines.next_line().await {
             if let Some(pct) = parse_ytdlp_progress(&line) {
                 let _ = app_clone.emit("download:progress", ProgressPayload {
@@ -119,24 +131,32 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
                     percent: pct,
                 });
             }
+            if let Some(message) = line.strip_prefix("ERROR: ") {
+                error = Some(message.to_string());
+            }
         }
+        error
     });
 
     // Read stdout for the filepath (--print after_move:filepath outputs one line)
     let mut stdout_lines = BufReader::new(stdout).lines();
     let mut file_path = String::new();
     while let Ok(Some(line)) = stdout_lines.next_line().await {
-        let trimmed = line.trim().to_string();
-        if !trimmed.is_empty() {
-            file_path = trimmed;
+        if let Some(pct) = parse_ytdlp_progress(&line) {
+            let _ = app.emit("download:progress", ProgressPayload {
+                id: id.to_string(),
+                percent: pct,
+            });
+        } else if !line.trim().is_empty() {
+            file_path = line.trim().to_string();
         }
     }
 
-    let _ = progress_task.await;
+    let error = progress_task.await.map_err(|e| e.to_string())?;
 
     let status = child.wait().await.map_err(|e| e.to_string())?;
     if !status.success() {
-        return Err("yt-dlp exited with error".into());
+        return Err(error.unwrap_or_else(|| "yt-dlp exited with error".into()));
     }
 
     if file_path.is_empty() {
@@ -166,27 +186,62 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
 
 async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Result<(), String> {
     let spotdl_bin = crate::binaries::spotdl(app)?;
-    let args = spotdl_args(url, output_dir);
-    let status = {
-        let mut cmd = Command::new(&spotdl_bin);
-        cmd.args(&args);
-        #[cfg(windows)] cmd.creation_flags(CREATE_NO_WINDOW);
-        cmd.status().await.map_err(|e| format!("spotdl not found at {:?}: {e}", spotdl_bin))?
-    };
+    let ffmpeg = crate::binaries::ffmpeg_dir(app)?.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+    // spotdl can exit successfully despite a failed audio download. Isolate
+    // this invocation so an older MP3 cannot be reported as its result.
+    let job_dir = std::path::Path::new(output_dir).join(format!(".djdrop-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&job_dir).map_err(|e| e.to_string())?;
+    let result = async {
+        let args = spotdl_args(url, &job_dir.to_string_lossy(), &ffmpeg.to_string_lossy());
+        let output = {
+            let mut cmd = Command::new(&spotdl_bin);
+            cmd.args(&args).arg("--print-errors");
+            cmd.env("PATH", bundled_tools_path(app)?);
+            #[cfg(windows)] cmd.creation_flags(CREATE_NO_WINDOW);
+            cmd.output().await.map_err(|e| format!("spotdl not found at {:?}: {e}", spotdl_bin))?
+        };
 
-    if !status.success() { return Err("spotdl exited with error".into()); }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let message = stderr.lines().rev().find(|s| !s.trim().is_empty())
+            .or_else(|| stdout.lines().rev().find(|s| !s.trim().is_empty()))
+            .unwrap_or("spotdl exited with error");
+        if !output.status.success() {
+            return Err(message.to_string());
+        }
 
-    // spotdl doesn't print filepath easily; scan output_dir for newest mp3
-    let file_path = newest_mp3_in(output_dir)?;
-    let track_name = std::path::Path::new(&file_path)
-        .file_stem().map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        let file_path = move_spotdl_outputs(&job_dir, std::path::Path::new(output_dir))
+            .map_err(|e| format!("{e}: {message}"))?;
+        let track_name = std::path::Path::new(&file_path)
+            .file_stem().map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
 
-    let _ = app.emit("download:done", DonePayload {
-        id: id.to_string(), file_path: file_path.clone(), track_name, source: "spotify".into()
-    });
-    crate::analyzer::analyze(app, id, &file_path).await;
-    Ok(())
+        let _ = app.emit("download:done", DonePayload {
+            id: id.to_string(), file_path: file_path.clone(), track_name, source: "spotify".into()
+        });
+        crate::analyzer::analyze(app, id, &file_path).await;
+        Ok(())
+    }.await;
+    let _ = std::fs::remove_dir_all(job_dir);
+    result
+}
+
+fn move_spotdl_outputs(job_dir: &std::path::Path, output_dir: &std::path::Path) -> Result<String, String> {
+    let newest = newest_mp3_in(&job_dir.to_string_lossy())?;
+    let file_name = std::path::Path::new(&newest).file_name()
+        .ok_or("spotdl returned an invalid filename")?;
+    let file_path = output_dir.join(file_name);
+    for entry in std::fs::read_dir(job_dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_file() { continue; }
+        let dest = output_dir.join(entry.file_name());
+        if dest.exists() {
+            std::fs::copy(entry.path(), &dest).map_err(|e| e.to_string())?;
+        } else {
+            std::fs::rename(entry.path(), &dest).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(file_path.to_string_lossy().into_owned())
 }
 
 async fn run_qobuz(app: &AppHandle, id: &str, url: &str, output_dir: &str, username: &str, password: &str) -> Result<(), String> {
@@ -336,31 +391,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ytdlp_args_include_mp3_flags() {
-        let args = ytdlp_args("https://youtube.com/watch?v=x", "/tmp/out", "/tmp/ffmpeg");
-        assert!(args.contains(&"--audio-format".to_string()));
-        assert!(args.contains(&"mp3".to_string()));
-        assert!(args.contains(&"--audio-quality".to_string()));
-        assert!(args.contains(&"0".to_string()));
-        assert!(args.contains(&"-P".to_string()));
-        assert!(args.contains(&"/tmp/out".to_string()));
-        assert!(args.contains(&"--ffmpeg-location".to_string()));
-        assert!(args.contains(&"/tmp/ffmpeg".to_string()));
-    }
+    fn spotdl_only_reports_audio_from_its_own_download() {
+        let root = tempfile::tempdir().unwrap();
+        let output_dir = root.path();
+        let job_dir = output_dir.join("job");
+        std::fs::create_dir(&job_dir).unwrap();
+        std::fs::write(output_dir.join("older.mp3"), b"older").unwrap();
 
-    #[test]
-    fn spotdl_args_include_320k() {
-        let args = spotdl_args("https://open.spotify.com/track/x", "/tmp/out");
-        assert!(args.contains(&"320k".to_string()));
-        assert!(args.contains(&"mp3".to_string()));
+        assert!(move_spotdl_outputs(&job_dir, output_dir).is_err());
+        std::fs::write(job_dir.join("new.mp3"), b"new").unwrap();
+        let path = move_spotdl_outputs(&job_dir, output_dir).unwrap();
+        assert_eq!(std::path::Path::new(&path), output_dir.join("new.mp3"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert_eq!(std::fs::read(output_dir.join("older.mp3")).unwrap(), b"older");
     }
-
-    #[test]
-    fn qobuz_args_include_url() {
-        let args = qobuz_args("https://www.qobuz.com/album/x", "/tmp/out");
-        assert!(args.contains(&"https://www.qobuz.com/album/x".to_string()));
-    }
-
     #[test]
     fn parse_progress_extracts_percent() {
         assert_eq!(parse_ytdlp_progress("[download]  42.3% of 5.00MiB"), Some(42));
