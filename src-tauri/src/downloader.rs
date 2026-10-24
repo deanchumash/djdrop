@@ -94,52 +94,8 @@ pub async fn run_download(app: AppHandle, id: String, source: DownloadSource, in
                 }
             }
         }
-        DownloadSource::Pool(Pool::LiveDjService) => {
-            let cfg = crate::config::read(&app).map_err(|e| e.to_string());
-            match cfg {
-                Ok(cfg) => match crate::credentials::resolve(
-                    &cfg.pools.livedjservice.username_ref,
-                    &cfg.pools.livedjservice.password_ref,
-                ).await {
-                    Ok((username, password)) => run_livedj(&app, &id, &input, &output_dir, &username, &password).await,
-                    Err(e) => Err(e),
-                },
-                Err(e) => Err(e),
-            }
-        }
-        DownloadSource::Pool(_) => Err("pool sidecar not connected".to_string()),
-        DownloadSource::Search(query) => {
-            match crate::config::read(&app) {
-                Ok(cfg) if matches!(&cfg.search_priority, crate::config::SearchPriority::Pools)
-                    && !cfg.pools.livedjservice.username_ref.is_empty()
-                    && !cfg.pools.livedjservice.password_ref.is_empty() => {
-                    let pool_result = match crate::credentials::resolve(
-                        &cfg.pools.livedjservice.username_ref,
-                        &cfg.pools.livedjservice.password_ref,
-                    ).await {
-                        Ok((username, password)) => run_livedj(
-                            &app, &id, query, &output_dir, &username, &password,
-                        ).await,
-                        Err(e) => Err(e),
-                    };
-                    match pool_result {
-                        Ok(()) => Ok(()),
-                        Err(pool_error) => {
-                            let fallback = format!("ytsearch1:{}", query);
-                            emit_stage(&app, &id, "YouTube");
-                            run_ytdlp(&app, &id, &fallback, &output_dir).await
-                                .map_err(|e| format!("LiveDJService: {pool_error}; YouTube: {e}"))
-                        }
-                    }
-                }
-                cfg => {
-                    let soundcloud = cfg.map(|c| matches!(c.search_priority, crate::config::SearchPriority::Soundcloud))
-                        .unwrap_or(false);
-                    let url = if soundcloud { format!("scsearch1:{}", query) } else { format!("ytsearch1:{}", query) };
-                    run_ytdlp(&app, &id, &url, &output_dir).await
-                }
-            }
-        }
+        DownloadSource::Pool(pool) => run_pool(&app, &id, pool, &input, &output_dir).await,
+        DownloadSource::Search(query) => run_search(&app, &id, query, &output_dir).await,
     };
 
     if let Err(msg) = result {
@@ -393,33 +349,83 @@ fn move_spotdl_outputs(job_dir: &std::path::Path, output_dir: &std::path::Path) 
     Ok(file_path.to_string_lossy().into_owned())
 }
 
-async fn run_livedj(
-    app: &AppHandle, id: &str, query: &str, output_dir: &str,
-    username: &str, password: &str,
-) -> Result<(), String> {
-    if username.is_empty() || password.is_empty() {
-        return Err("Set both LiveDJService credential references in Settings".into());
+/// Plain-text search. With "Pools first" the record pools are tried in order (Club Killers,
+/// then LiveDJService) before falling back to YouTube; every failure is reported together.
+async fn run_search(app: &AppHandle, id: &str, query: &str, output_dir: &str) -> Result<(), String> {
+    let cfg = crate::config::read(app);
+    let mut failures: Vec<String> = Vec::new();
+    if let Ok(cfg) = &cfg {
+        if matches!(cfg.search_priority, crate::config::SearchPriority::Pools) {
+            for (pool, refs) in [
+                (Pool::ClubKillers, &cfg.pools.clubkillers),
+                (Pool::LiveDjService, &cfg.pools.livedjservice),
+            ] {
+                if refs.username_ref.is_empty() || refs.password_ref.is_empty() { continue; }
+                match run_pool(app, id, &pool, query, output_dir).await {
+                    Ok(()) => return Ok(()),
+                    Err(e) => failures.push(e),
+                }
+            }
+        }
     }
-    emit_stage(app, id, "LiveDJService");
+    if !failures.is_empty() { emit_stage(app, id, "YouTube"); }
+    let soundcloud = cfg.map(|c| matches!(c.search_priority, crate::config::SearchPriority::Soundcloud))
+        .unwrap_or(false);
+    let url = if soundcloud { format!("scsearch1:{}", query) } else { format!("ytsearch1:{}", query) };
+    run_ytdlp(app, id, &url, output_dir).await.map_err(|e| {
+        if failures.is_empty() { e } else { failures.push(format!("YouTube: {e}")); failures.join("; ") }
+    })
+}
+
+/// Runs a record pool's bundled Deno worker with the pool's credentials and imports its file.
+async fn run_pool(app: &AppHandle, id: &str, pool: &Pool, query: &str, output_dir: &str) -> Result<(), String> {
+    let cfg = crate::config::read(app).map_err(|e| e.to_string())?;
+    let (name, script, source, refs, env_names) = match pool {
+        Pool::LiveDjService => ("LiveDJService", "livedjservice.ts", "livedjservice", &cfg.pools.livedjservice,
+            ["LIVEDJ_USERNAME", "LIVEDJ_PASSWORD"]),
+        Pool::ClubKillers => ("Club Killers", "clubkillers.ts", "clubkillers", &cfg.pools.clubkillers,
+            ["CK_USERNAME", "CK_PASSWORD"]),
+        Pool::BpmSupreme => return Err("BPM Supreme downloads are not supported yet".into()),
+    };
+    if refs.username_ref.is_empty() || refs.password_ref.is_empty() {
+        return Err(format!("Set both {name} credential references in Settings"));
+    }
+    let (username, password) = crate::credentials::resolve(&refs.username_ref, &refs.password_ref).await?;
+    emit_stage(app, id, name);
     let resources = crate::binaries::ffmpeg_dir(app)?;
-    let script = app.path().resource_dir().map_err(|e| e.to_string())?
-        .join("sidecar").join("livedjservice.ts");
+    let script = app.path().resource_dir().map_err(|e| e.to_string())?.join("sidecar").join(script);
     let mut cmd = Command::new(resources.join("deno.exe"));
     cmd.args(["run", "--allow-all"]).arg(script).args([query, output_dir])
-        .env("LIVEDJ_USERNAME", username).env("LIVEDJ_PASSWORD", password);
+        .env(env_names[0], username).env(env_names[1], password);
+    if let Pool::ClubKillers = pool {
+        cmd.env("CK_DEVICE_ID", pool_device_id(app, "clubkillers")?);
+    }
     #[cfg(windows)] cmd.creation_flags(CREATE_NO_WINDOW);
-    let output = cmd.output().await.map_err(|e| format!("LiveDJService browser worker failed to start: {e}"))?;
+    let output = cmd.output().await.map_err(|e| format!("{name} worker failed to start: {e}"))?;
     if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("LiveDJService: {}", error.trim()));
+        return Err(format!("{name}: {}", String::from_utf8_lossy(&output.stderr).trim()));
     }
     #[derive(serde::Deserialize)]
     struct Downloaded { file_path: String }
     let file = String::from_utf8_lossy(&output.stdout).lines().rev()
         .find_map(|line| serde_json::from_str::<Downloaded>(line).ok())
-        .ok_or("LiveDJService did not report a downloaded file")?;
-    finish_download(app, id, &file.file_path, Some("livedjservice")).await;
+        .ok_or_else(|| format!("{name} did not report a downloaded file"))?;
+    finish_download(app, id, &file.file_path, Some(source)).await;
     Ok(())
+}
+
+/// A stable per-install device id, so repeated pool sign-ins reuse one device entry on the
+/// pool's account instead of registering a new device every download. Not a secret.
+fn pool_device_id(app: &AppHandle, pool: &str) -> Result<String, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{pool}-device-id"));
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        if !existing.trim().is_empty() { return Ok(existing.trim().to_string()); }
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    std::fs::write(&path, &id).map_err(|e| e.to_string())?;
+    Ok(id)
 }
 
 async fn run_qobuz(app: &AppHandle, id: &str, url: &str, output_dir: &str, username: &str, password: &str) -> Result<(), String> {
