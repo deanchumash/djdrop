@@ -99,7 +99,7 @@ export function QueueItem({ item, onStart, keyNotation = 'musical' }: Props) {
           </span>
         </span>
       ) : (
-        <span className="queue-item__status" title={item.error}>
+        <span className="queue-item__status">
           {item.status === 'analyzing' ? 'Analyzing' : item.status === 'done' ? 'Done' : 'Error'}
         </span>
       )}
@@ -114,6 +114,11 @@ export function QueueItem({ item, onStart, keyNotation = 'musical' }: Props) {
         >
           <span className="queue-item__progress-fill" style={hasProgress ? { width: `${item.progress}%` } : undefined} />
         </div>
+      )}
+      {item.status === 'error' && (
+        <p className="queue-item__error" role="alert">
+          {item.error || 'No error details were provided.'}
+        </p>
       )}
     </div>
   );

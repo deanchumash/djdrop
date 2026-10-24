@@ -131,6 +131,22 @@ html, body, #root {
 .queue-item--error .queue-item__status { color: #f87171; }
 .queue-item__start { background: none; border: none; color: #4ade80; cursor: pointer; font-size: 14px; padding: 0 2px; }
 .queue-item__start:focus-visible { outline: 2px solid #4ade80; outline-offset: 2px; }
+.queue-item__error {
+  grid-column: 2 / -1;
+  min-width: 0;
+  margin: 0;
+  padding: 4px 6px;
+  border-left: 2px solid #f87171;
+  border-radius: 2px;
+  background: rgba(248, 113, 113, 0.1);
+  color: #fca5a5;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+  cursor: text;
+}
 .queue-item__progress {
   grid-column: 2 / -1;
   width: 100%;

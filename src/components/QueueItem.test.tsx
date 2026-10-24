@@ -38,11 +38,13 @@ describe('QueueItem', () => {
     expect(screen.getByText('Analyzing')).toBeTruthy();
   });
 
-  it('distinguishes completion and errors from in-progress work', () => {
-    const { rerender } = render(<QueueItem item={{ ...item, status: 'done' }} />);
-    expect(screen.getByText('Done')).toBeTruthy();
-    rerender(<QueueItem item={{ ...item, status: 'error', error: 'No matching track' }} />);
-    expect(screen.getByText('Error').getAttribute('title')).toBe('No matching track');
+  it('shows the full failure reason without hover and removes it after completion', () => {
+    const message = 'no audio file found in output dir: YT-DLP download error - https://soundcloud.com/ennedyalone/fun-1';
+    const { rerender } = render(<QueueItem item={{ ...item, status: 'error', error: message }} />);
+    expect(screen.getByRole('alert').textContent).toBe(message);
     expect(screen.queryByRole('progressbar')).toBeNull();
+
+    rerender(<QueueItem item={{ ...item, status: 'done' }} />);
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

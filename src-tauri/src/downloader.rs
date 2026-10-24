@@ -29,15 +29,17 @@ pub fn ytdlp_args(url: &str, output_dir: &str, ffmpeg_dir: &str) -> Vec<String> 
     ]
 }
 
-pub fn spotdl_args(url: &str, output_dir: &str, ffmpeg: &str) -> Vec<String> {
-    vec![
-        "download".into(), url.into(),
-        "--audio".into(), "youtube".into(), "youtube-music".into(), "soundcloud".into(),
+pub fn spotdl_args(url: &str, output_dir: &str, ffmpeg: &str, providers: &[&str]) -> Vec<String> {
+    let mut args = Vec::with_capacity(11 + providers.len());
+    args.extend(["download".into(), url.into(), "--audio".into()]);
+    args.extend(providers.iter().map(|provider| (*provider).to_string()));
+    args.extend([
         "--output".into(), output_dir.into(),
         "--format".into(), "mp3".into(),
         "--bitrate".into(), "320k".into(),
         "--ffmpeg".into(), ffmpeg.into(),
-    ]
+    ]);
+    args
 }
 
 pub fn qobuz_args(url: &str, output_dir: &str) -> Vec<String> {
@@ -191,32 +193,27 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
 async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Result<(), String> {
     let spotdl_bin = crate::binaries::spotdl(app)?;
     let ffmpeg = crate::binaries::ffmpeg_dir(app)?.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
-    // spotdl can exit successfully despite a failed audio download. Isolate
-    // this invocation so an older MP3 cannot be reported as its result.
+    let tools_path = bundled_tools_path(app)?;
+    // spotDL can exit successfully despite a failed audio download. Isolate
+    // each attempt so a partial or older MP3 cannot be reported as its result.
     // spotDL removes a leading dot from --output, so use a visible job directory.
     let job_dir = std::path::Path::new(output_dir).join(format!("djdrop-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&job_dir).map_err(|e| e.to_string())?;
     let result = async {
-        let args = spotdl_args(url, &job_dir.to_string_lossy(), &ffmpeg.to_string_lossy());
-        let output = {
-            let mut cmd = Command::new(&spotdl_bin);
-            cmd.args(&args).arg("--print-errors");
-            cmd.env("PATH", bundled_tools_path(app)?);
-            #[cfg(windows)] cmd.creation_flags(CREATE_NO_WINDOW);
-            cmd.output().await.map_err(|e| format!("spotdl not found at {:?}: {e}", spotdl_bin))?
+        let output_path = std::path::Path::new(output_dir);
+        let primary = spotdl_attempt(
+            &spotdl_bin, &ffmpeg, &tools_path, url,
+            &["youtube", "youtube-music", "soundcloud"], &job_dir.join("primary"), output_path,
+        ).await;
+        let file_path = match primary {
+            Ok(path) => path,
+            Err(primary_error) => spotdl_attempt(
+                &spotdl_bin, &ffmpeg, &tools_path, url,
+                &["bandcamp"], &job_dir.join("bandcamp"), output_path,
+            ).await.map_err(|bandcamp_error| {
+                format!("Primary sources: {primary_error}; Bandcamp fallback: {bandcamp_error}")
+            })?,
         };
-
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let message = stderr.lines().rev().find(|s| !s.trim().is_empty())
-            .or_else(|| stdout.lines().rev().find(|s| !s.trim().is_empty()))
-            .unwrap_or("spotdl exited with error");
-        if !output.status.success() {
-            return Err(message.to_string());
-        }
-
-        let file_path = move_spotdl_outputs(&job_dir, std::path::Path::new(output_dir))
-            .map_err(|e| format!("{e}: {message}"))?;
         let track_name = std::path::Path::new(&file_path)
             .file_stem().map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
@@ -231,6 +228,36 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
     }.await;
     let _ = std::fs::remove_dir_all(job_dir);
     result
+}
+
+async fn spotdl_attempt(
+    spotdl_bin: &std::path::Path,
+    ffmpeg: &std::path::Path,
+    tools_path: &std::ffi::OsStr,
+    url: &str,
+    providers: &[&str],
+    attempt_dir: &std::path::Path,
+    output_dir: &std::path::Path,
+) -> Result<String, String> {
+    std::fs::create_dir(attempt_dir).map_err(|e| e.to_string())?;
+    let args = spotdl_args(url, &attempt_dir.to_string_lossy(), &ffmpeg.to_string_lossy(), providers);
+    let output = {
+        let mut cmd = Command::new(spotdl_bin);
+        cmd.args(&args).arg("--print-errors");
+        cmd.env("PATH", tools_path);
+        #[cfg(windows)] cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.output().await.map_err(|e| format!("spotdl not found at {:?}: {e}", spotdl_bin))?
+    };
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let message = stderr.lines().rev().find(|s| !s.trim().is_empty())
+        .or_else(|| stdout.lines().rev().find(|s| !s.trim().is_empty()))
+        .unwrap_or("spotdl exited with error").trim();
+    if !output.status.success() {
+        return Err(message.to_string());
+    }
+    move_spotdl_outputs(attempt_dir, output_dir).map_err(|e| format!("{e}: {message}"))
 }
 
 fn move_spotdl_outputs(job_dir: &std::path::Path, output_dir: &std::path::Path) -> Result<String, String> {
