@@ -16,7 +16,10 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "resources": ["binaries/*"],
+    "resources": {
+      "binaries/*": "binaries/",
+      "../sidecar/livedjservice.ts": "sidecar/livedjservice.ts"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
