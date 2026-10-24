@@ -27,6 +27,8 @@ pub struct PoolsConfig {
     pub clubkillers: PoolCredentialRefs,
     pub livedjservice: PoolCredentialRefs,
     pub qobuz: PoolCredentialRefs,
+    #[serde(default)]
+    pub soulseek: PoolCredentialRefs,
 }
 
 impl Default for PoolsConfig {
@@ -36,6 +38,7 @@ impl Default for PoolsConfig {
             clubkillers: Default::default(),
             livedjservice: Default::default(),
             qobuz: Default::default(),
+            soulseek: Default::default(),
         }
     }
 }

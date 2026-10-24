@@ -11,6 +11,7 @@ vi.mocked(invoke).mockResolvedValue({
     clubkillers: { username_ref: '', password_ref: '' },
     livedjservice: { username_ref: '', password_ref: '' },
     qobuz: { username_ref: '', password_ref: '' },
+    soulseek: { username_ref: '', password_ref: '' },
   },
 });
 
@@ -22,5 +23,6 @@ describe('SettingsPanel', () => {
     expect(screen.getByText('clubkillers')).toBeTruthy();
     expect(screen.getByText('livedjservice')).toBeTruthy();
     expect(screen.getByText('qobuz')).toBeTruthy();
+    expect(screen.getByText('soulseek')).toBeTruthy();
   });
 });

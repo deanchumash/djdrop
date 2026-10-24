@@ -61,5 +61,9 @@ describe('QueueItem', () => {
 
     rerender(<QueueItem item={{ ...done, bitrate: undefined }} />);
     expect(screen.getByText('MP3')).toBeTruthy();
+
+    rerender(<QueueItem item={{ ...done, source: 'soulseek', format: 'FLAC', bitrate: undefined }} />);
+    expect(screen.getByLabelText('Soulseek')).toBeTruthy();
+    expect(screen.getByText('FLAC')).toBeTruthy();
   });
 });

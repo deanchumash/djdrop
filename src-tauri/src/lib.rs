@@ -7,6 +7,7 @@ mod gate;
 mod matcher;
 mod media;
 mod router;
+mod soulseek;
 #[cfg(windows)]
 mod native_circle;
 
@@ -134,6 +135,10 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running djdrop");
+        .build(tauri::generate_context!())
+        .expect("error while building djdrop")
+        .run(|_app, event| {
+            // Don't leave the bundled Soulseek client running after djdrop exits.
+            if let tauri::RunEvent::Exit = event { soulseek::shutdown(); }
+        });
 }

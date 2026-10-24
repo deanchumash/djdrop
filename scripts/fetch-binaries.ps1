@@ -19,13 +19,13 @@ function Get-LatestGitHubAsset {
 }
 
 # yt-dlp standalone exe
-Write-Host "[1/4] Downloading yt-dlp..."
+Write-Host "[1/5] Downloading yt-dlp..."
 $ytdlpUrl = Get-LatestGitHubAsset -repo "yt-dlp/yt-dlp" -pattern "yt-dlp.exe"
 Invoke-WebRequest -Uri $ytdlpUrl -OutFile "$binDir\yt-dlp.exe" -UseBasicParsing
 Write-Host "      yt-dlp: $([math]::Round((Get-Item "$binDir\yt-dlp.exe").Length / 1MB))MB"
 
 # ffmpeg essentials build (includes libmp3lame)
-Write-Host "[2/4] Downloading ffmpeg (gyan.dev essentials)..."
+Write-Host "[2/5] Downloading ffmpeg (gyan.dev essentials)..."
 $ffmpegZip = "$env:TEMP\ffmpeg-essentials-djdrop.zip"
 Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $ffmpegZip -UseBasicParsing
 $extractDir = "$env:TEMP\ffmpeg-essentials-djdrop"
@@ -42,7 +42,7 @@ Write-Host "      ffmpeg + ffprobe: $([math]::Round((Get-Item "$binDir\ffmpeg.ex
 
 # Upstream's Windows exe freezes an old yt-dlp. Build the latest spotDL
 # release with a current yt-dlp so Spotify audio survives YouTube changes.
-Write-Host "[3/4] Building spotdl with current yt-dlp..."
+Write-Host "[3/5] Building spotdl with current yt-dlp..."
 $headers = @{}
 if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
 $release = Invoke-RestMethod "https://api.github.com/repos/spotDL/spotify-downloader/releases/latest" -Headers $headers
@@ -68,13 +68,26 @@ try {
 Write-Host "      spotdl: $([math]::Round((Get-Item "$binDir\spotdl.exe").Length / 1MB))MB"
 
 # yt-dlp (and spotdl's internal yt-dlp) need a JS runtime for YouTube.
-Write-Host "[4/4] Downloading Deno..."
+Write-Host "[4/5] Downloading Deno..."
 $denoUrl = Get-LatestGitHubAsset -repo "denoland/deno" -pattern "deno-x86_64-pc-windows-msvc.zip"
 $denoZip = "$env:TEMP\deno-djdrop.zip"
 Invoke-WebRequest -Uri $denoUrl -OutFile $denoZip -UseBasicParsing
 Expand-Archive -Path $denoZip -DestinationPath $binDir -Force
 Remove-Item $denoZip -Force
 Write-Host "      deno: $([math]::Round((Get-Item "$binDir\deno.exe").Length / 1MB))MB"
+
+# slskd: headless Soulseek client that djdrop drives over a loopback REST API.
+Write-Host "[5/5] Downloading slskd..."
+$slskdUrl = Get-LatestGitHubAsset -repo "slskd/slskd" -pattern "slskd-*-win-x64.zip"
+$slskdZip = "$env:TEMP\slskd-djdrop.zip"
+Invoke-WebRequest -Uri $slskdUrl -OutFile $slskdZip -UseBasicParsing
+$slskdDir = "$env:TEMP\slskd-djdrop"
+if (Test-Path $slskdDir) { Remove-Item $slskdDir -Recurse -Force }
+Expand-Archive -Path $slskdZip -DestinationPath $slskdDir -Force
+Copy-Item "$slskdDir\slskd.exe" "$binDir\slskd.exe"
+Remove-Item $slskdDir -Recurse -Force
+Remove-Item $slskdZip -Force
+Write-Host "      slskd: $([math]::Round((Get-Item "$binDir\slskd.exe").Length / 1MB))MB"
 
 Write-Host ""
 Write-Host "NOTE: keyfinder-cli has no prebuilt Windows binary."

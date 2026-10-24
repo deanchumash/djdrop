@@ -24,7 +24,7 @@ export function SettingsPanel({ onClose }: Props) {
     await invoke('save_credential', { pool, username, password });
   };
 
-  const pools = ['bpmsupreme', 'clubkillers', 'livedjservice', 'qobuz'] as const;
+  const pools = ['bpmsupreme', 'clubkillers', 'livedjservice', 'qobuz', 'soulseek'] as const;
 
   return (
     <div className="settings-panel">

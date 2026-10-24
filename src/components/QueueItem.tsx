@@ -53,6 +53,13 @@ function SourceLogo({ source }: { source?: string }) {
           <path d="M5 16.5L9.5 7.5H19L14.5 16.5Z" fill="white" />
         </svg>
       );
+    case 'soulseek':
+      return (
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-label="Soulseek">
+          <circle cx="12" cy="12" r="12" fill="#1f6fd1" />
+          <path d="M16.5 8.5C15.5 7 13.5 6.5 12 6.5C10 6.5 8.5 7.6 8.5 9.2C8.5 12.2 15.5 11 15.5 14.6C15.5 16.3 14 17.5 12 17.5C10.2 17.5 8.7 16.7 7.5 15.3" stroke="white" strokeWidth="2" strokeLinecap="round" fill="none" />
+        </svg>
+      );
     case 'bpmsupreme':
       return <span className="queue-item__source-text" style={{ color: '#a855f7' }}>B</span>;
     case 'clubkillers':

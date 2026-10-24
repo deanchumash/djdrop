@@ -8,6 +8,7 @@ export interface PoolsConfig {
   clubkillers: PoolCredentialRefs;
   livedjservice: PoolCredentialRefs;
   qobuz: PoolCredentialRefs;
+  soulseek: PoolCredentialRefs;
 }
 
 export type SearchMode = 'best_match' | 'show_results';

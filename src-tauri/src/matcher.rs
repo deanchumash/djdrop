@@ -57,19 +57,19 @@ pub fn search_query(meta: &TrackMeta) -> String {
 }
 
 /// Lower-case alphanumerics separated by single spaces.
-fn normalize(s: &str) -> String {
+pub(crate) fn normalize(s: &str) -> String {
     let spaced: String = s.chars()
         .map(|c| if c.is_alphanumeric() { c.to_lowercase().next().unwrap_or(c) } else { ' ' })
         .collect();
     spaced.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn contains_phrase(haystack: &str, phrase: &str) -> bool {
+pub(crate) fn contains_phrase(haystack: &str, phrase: &str) -> bool {
     !phrase.is_empty() && format!(" {haystack} ").contains(&format!(" {phrase} "))
 }
 
 /// Spotify titles may carry "(feat. X)" / "[Remix]" decorations that uploads omit.
-fn core_title(name: &str) -> String {
+pub(crate) fn core_title(name: &str) -> String {
     let mut depth = 0usize;
     let stripped: String = name.chars().filter(|&c| match c {
         '(' | '[' => { depth += 1; false }

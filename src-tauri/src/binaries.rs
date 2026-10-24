@@ -25,6 +25,10 @@ pub fn spotdl(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     bin(app, "spotdl")
 }
 
+pub fn slskd(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    bin(app, "slskd")
+}
+
 pub fn keyfinder_cli(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     bin(app, "keyfinder-cli")
 }
