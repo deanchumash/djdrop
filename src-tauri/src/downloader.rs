@@ -10,6 +10,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[derive(Clone, Serialize)]
 pub struct ProgressPayload { pub id: String, pub percent: u8 }
 #[derive(Clone, Serialize)]
+struct StartedPayload { id: String }
+#[derive(Clone, Serialize)]
 pub struct DonePayload { pub id: String, pub file_path: String, pub track_name: String, pub source: String }
 #[derive(Clone, Serialize)]
 pub struct ErrorPayload { pub id: String, pub message: String }
@@ -20,6 +22,7 @@ pub fn ytdlp_args(url: &str, output_dir: &str, ffmpeg_dir: &str) -> Vec<String> 
         "--audio-quality".into(), "0".into(),
         "-P".into(), output_dir.into(),
         "--print".into(), "after_move:filepath".into(),
+        "--progress".into(), "--newline".into(),
         "--no-playlist".into(),
         "--ffmpeg-location".into(), ffmpeg_dir.into(),
         url.into(),
@@ -50,6 +53,9 @@ fn bundled_tools_path(app: &AppHandle) -> Result<std::ffi::OsString, String> {
 }
 
 pub async fn run_download(app: AppHandle, id: String, source: DownloadSource, input: String, output_dir: String) {
+    #[cfg(windows)]
+    crate::native_circle::download_started(&id);
+    let _ = app.emit("download:started", StartedPayload { id: id.clone() });
     let result = match &source {
         DownloadSource::YtDlp => {
             run_ytdlp(&app, &id, &input, &output_dir).await
@@ -87,6 +93,8 @@ pub async fn run_download(app: AppHandle, id: String, source: DownloadSource, in
     };
 
     if let Err(msg) = result {
+        #[cfg(windows)]
+        crate::native_circle::download_finished(&id);
         let _ = app.emit("download:error", ErrorPayload { id, message: msg });
     }
 }
@@ -126,10 +134,7 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
         let mut error = None;
         while let Ok(Some(line)) = lines.next_line().await {
             if let Some(pct) = parse_ytdlp_progress(&line) {
-                let _ = app_clone.emit("download:progress", ProgressPayload {
-                    id: id_clone.clone(),
-                    percent: pct,
-                });
+                emit_progress(&app_clone, &id_clone, pct);
             }
             if let Some(message) = line.strip_prefix("ERROR: ") {
                 error = Some(message.to_string());
@@ -143,10 +148,7 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
     let mut file_path = String::new();
     while let Ok(Some(line)) = stdout_lines.next_line().await {
         if let Some(pct) = parse_ytdlp_progress(&line) {
-            let _ = app.emit("download:progress", ProgressPayload {
-                id: id.to_string(),
-                percent: pct,
-            });
+            emit_progress(app, id, pct);
         } else if !line.trim().is_empty() {
             file_path = line.trim().to_string();
         }
@@ -168,6 +170,8 @@ async fn run_ytdlp(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> Re
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| url.to_string());
 
+    #[cfg(windows)]
+    crate::native_circle::download_finished(id);
     let _ = app.emit("download:done", DonePayload {
         id: id.to_string(),
         file_path: file_path.clone(),
@@ -216,6 +220,8 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
             .file_stem().map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
 
+        #[cfg(windows)]
+        crate::native_circle::download_finished(id);
         let _ = app.emit("download:done", DonePayload {
             id: id.to_string(), file_path: file_path.clone(), track_name, source: "spotify".into()
         });
@@ -260,6 +266,8 @@ async fn run_qobuz(app: &AppHandle, id: &str, url: &str, output_dir: &str, usern
         .file_stem().map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
 
+    #[cfg(windows)]
+    crate::native_circle::download_finished(id);
     let _ = app.emit("download:done", DonePayload {
         id: id.to_string(), file_path: file_path.clone(), track_name, source: "qobuz".into()
     });
@@ -326,15 +334,16 @@ async fn run_http_download(
         .map_err(|e| e.to_string())?;
 
     let mut downloaded: u64 = 0;
+    let mut last_percent = None;
     while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
         file.write_all(&chunk).await.map_err(|e| e.to_string())?;
         downloaded += chunk.len() as u64;
-        if let Some(total) = total_bytes {
-            let pct = (downloaded * 100 / total) as u8;
-            let _ = app.emit(
-                "download:progress",
-                ProgressPayload { id: id.to_string(), percent: pct },
-            );
+        if let Some(total) = total_bytes.filter(|&total| total > 0) {
+            let pct = ((downloaded as u128 * 100 / total as u128).min(100)) as u8;
+            if last_percent != Some(pct) {
+                emit_progress(app, id, pct);
+                last_percent = Some(pct);
+            }
         }
     }
 
@@ -343,6 +352,8 @@ async fn run_http_download(
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| id.to_string());
 
+    #[cfg(windows)]
+    crate::native_circle::download_finished(id);
     let _ = app.emit(
         "download:done",
         DonePayload {
@@ -357,13 +368,26 @@ async fn run_http_download(
     Ok(())
 }
 
+fn emit_progress(app: &AppHandle, id: &str, percent: u8) {
+    #[cfg(windows)]
+    crate::native_circle::download_progress(id, percent);
+    let _ = app.emit("download:progress", ProgressPayload {
+        id: id.to_string(),
+        percent,
+    });
+}
+
 fn parse_ytdlp_progress(line: &str) -> Option<u8> {
     // "[download]  42.3% of"
     let trimmed = line.trim();
     if !trimmed.starts_with("[download]") { return None; }
-    let pct_str = trimmed.split_whitespace().nth(1)?;
-    let pct_str = pct_str.trim_end_matches('%');
-    pct_str.parse::<f64>().ok().map(|f| f as u8)
+    let pct_str = trimmed.split_whitespace().nth(1)?.strip_suffix('%')?;
+    let pct = pct_str.parse::<f64>().ok()?;
+    if pct.is_finite() && (0.0..=100.0).contains(&pct) {
+        Some(pct as u8)
+    } else {
+        None
+    }
 }
 
 fn newest_mp3_in(dir: &str) -> Result<String, String> {
@@ -408,7 +432,12 @@ mod tests {
     #[test]
     fn parse_progress_extracts_percent() {
         assert_eq!(parse_ytdlp_progress("[download]  42.3% of 5.00MiB"), Some(42));
+        assert!(ytdlp_args("https://example.com", "output", "ffmpeg")
+            .iter().any(|arg| arg == "--newline"));
         assert_eq!(parse_ytdlp_progress("[download] 100% of 5.00MiB"), Some(100));
         assert_eq!(parse_ytdlp_progress("[info] Writing thumbnail"), None);
+        assert_eq!(parse_ytdlp_progress("[download] 0.0% of 5.00MiB"), Some(0));
+        assert_eq!(parse_ytdlp_progress("[download] Unknown size"), None);
+        assert_eq!(parse_ytdlp_progress("[download] 105% of 5.00MiB"), None);
     }
 }

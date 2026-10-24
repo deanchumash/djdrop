@@ -115,15 +115,44 @@ html, body, #root {
 }
 
 .queue-item {
-  display: flex; align-items: center; gap: 6px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) repeat(3, auto);
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 3px;
   padding: 4px 2px; font-size: 12px; color: white;
   border-radius: 4px; cursor: default;
 }
 .queue-item--error { color: #f87171; }
-.queue-item__name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-item__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-item__bpm, .queue-item__key { color: #4ade80; font-size: 11px; }
-.queue-item__status { color: #888; font-size: 11px; }
-.queue-item__start { background: none; border: none; color: #4ade80; cursor: pointer; font-size: 14px; }
+.queue-item__actions { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.queue-item__status { color: #a1a1aa; font-size: 11px; white-space: nowrap; }
+.queue-item--error .queue-item__status { color: #f87171; }
+.queue-item__start { background: none; border: none; color: #4ade80; cursor: pointer; font-size: 14px; padding: 0 2px; }
+.queue-item__start:focus-visible { outline: 2px solid #4ade80; outline-offset: 2px; }
+.queue-item__progress {
+  grid-column: 2 / -1;
+  width: 100%;
+  height: 3px;
+  overflow: hidden;
+  background: rgba(74, 222, 128, 0.2);
+  border-radius: 3px;
+}
+.queue-item__progress-fill {
+  display: block;
+  height: 100%;
+  background: #4ade80;
+  border-radius: inherit;
+}
+.queue-item__progress--indeterminate .queue-item__progress-fill {
+  width: 40%;
+  animation: queue-sweep 1.3s ease-in-out infinite alternate;
+}
+@keyframes queue-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(250%); }
+}
 
 @keyframes queue-spin {
   to { transform: rotate(360deg); }
@@ -138,6 +167,13 @@ html, body, #root {
   border-radius: 50%;
   animation: queue-spin 0.7s linear infinite;
   flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .queue-item__spinner,
+  .queue-item__progress--indeterminate .queue-item__progress-fill {
+    animation: none;
+  }
 }
 
 .queue-item__source {

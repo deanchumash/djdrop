@@ -5,26 +5,32 @@ import type { DownloadItem, ProgressPayload, DonePayload, ErrorPayload, Analysis
 
 export function useDownloads() {
   const [downloads, setDownloads] = useState<DownloadItem[]>([]);
-  const [activeProgress, setActiveProgress] = useState<number | undefined>(undefined);
+  // The legacy React circle consumes a single percentage; derive it from a
+  // still-running item so another download's completion cannot clear it.
+  const activeProgress = downloads.find(d => d.status === 'downloading' && d.progress !== undefined)?.progress;
 
   useEffect(() => {
     const unlisteners = [
-      // Emitted from Rust for every download start, including native-circle drops
-      // where the frontend didn't call startDownload (which would have added the item).
+      // Native-circle drops are already accepted by the backend, not manually queued.
       listen<{ id: string; input: string }>('download:queued', ({ payload }) => {
         setDownloads(prev => {
           if (prev.some(d => d.id === payload.id)) return prev;
-          return [{ id: payload.id, input: payload.input, status: 'queued' }, ...prev];
+          return [{ id: payload.id, input: payload.input, status: 'pending' }, ...prev];
         });
       }),
-      listen<ProgressPayload>('download:progress', ({ payload }) => {
-        setActiveProgress(payload.percent);
+      listen<{ id: string }>('download:started', ({ payload }) => {
         setDownloads(prev => prev.map(d =>
-          d.id === payload.id ? { ...d, progress: payload.percent, status: 'downloading' } : d
+          d.id === payload.id && d.status === 'pending' ? { ...d, status: 'downloading' } : d
+        ));
+      }),
+      listen<ProgressPayload>('download:progress', ({ payload }) => {
+        setDownloads(prev => prev.map(d =>
+          d.id === payload.id && (d.status === 'pending' || d.status === 'downloading')
+            ? { ...d, progress: payload.percent, status: 'downloading' }
+            : d
         ));
       }),
       listen<DonePayload>('download:done', ({ payload }) => {
-        setActiveProgress(undefined);
         setDownloads(prev => prev.map(d =>
           d.id === payload.id
             ? { ...d, file_path: payload.file_path, track_name: payload.track_name, source: payload.source, status: 'analyzing' }
@@ -32,7 +38,6 @@ export function useDownloads() {
         ));
       }),
       listen<ErrorPayload>('download:error', ({ payload }) => {
-        setActiveProgress(undefined);
         setDownloads(prev => prev.map(d =>
           d.id === payload.id ? { ...d, status: 'error', error: payload.message } : d
         ));
@@ -48,9 +53,14 @@ export function useDownloads() {
 
   const startDownload = useCallback(async (input: string) => {
     const id = crypto.randomUUID();
-    const item: DownloadItem = { id, input, status: 'queued' };
-    setDownloads(prev => [item, ...prev]);
-    await invoke('start_download', { id, input });
+    setDownloads(prev => [{ id, input, status: 'pending' }, ...prev]);
+    try {
+      await invoke('start_download', { id, input });
+    } catch (error) {
+      setDownloads(prev => prev.map(d =>
+        d.id === id ? { ...d, status: 'error', error: String(error) } : d
+      ));
+    }
   }, []);
 
   const queueOnly = useCallback((input: string) => {
@@ -59,7 +69,16 @@ export function useDownloads() {
   }, []);
 
   const triggerDownload = useCallback(async (item: DownloadItem) => {
-    await invoke('start_download', { id: item.id, input: item.input });
+    setDownloads(prev => prev.map(d =>
+      d.id === item.id && d.status === 'queued' ? { ...d, status: 'pending' } : d
+    ));
+    try {
+      await invoke('start_download', { id: item.id, input: item.input });
+    } catch (error) {
+      setDownloads(prev => prev.map(d =>
+        d.id === item.id ? { ...d, status: 'error', error: String(error) } : d
+      ));
+    }
   }, []);
 
   return { downloads, activeProgress, startDownload, queueOnly, triggerDownload };

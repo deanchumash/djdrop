@@ -53,7 +53,7 @@ function SourceLogo({ source }: { source?: string }) {
     case 'livedjservice':
       return <span className="queue-item__source-text" style={{ color: '#06b6d4' }}>L</span>;
     default:
-      return <span className="queue-item__source-text">?</span>;
+      return <span className="queue-item__source-text" aria-label="Download">↓</span>;
   }
 }
 
@@ -66,13 +66,9 @@ export function QueueItem({ item, onStart, keyNotation = 'musical' }: Props) {
     await startDrag({ items: [item.file_path] });
   };
 
-  const statusLabel = {
-    queued:     '…',
-    downloading: '',
-    analyzing:  'analyzing',
-    done:       '',
-    error:      '✕',
-  }[item.status];
+  const downloading = item.status === 'downloading';
+  const hasProgress = downloading && item.progress !== undefined;
+  const name = item.track_name ?? item.input;
 
   return (
     <div
@@ -83,18 +79,42 @@ export function QueueItem({ item, onStart, keyNotation = 'musical' }: Props) {
       <span className="queue-item__source">
         <SourceLogo source={item.source} />
       </span>
-      <span className="queue-item__name">{item.track_name ?? item.input}</span>
+      <span className="queue-item__name" title={name}>{name}</span>
       {item.bpm ? <span className="queue-item__bpm">{item.bpm}</span> : null}
       {item.key
         ? <span className="queue-item__key">
             {keyNotation === 'camelot' ? (CAMELOT[item.key] ?? item.key) : item.key}
           </span>
         : null}
-      {item.status === 'downloading'
-        ? <span className="queue-item__spinner" aria-label="downloading" />
-        : item.status === 'queued' && onStart
-          ? <button className="queue-item__start" onClick={onStart}>▶</button>
-          : <span className="queue-item__status">{statusLabel}</span>}
+      {item.status === 'queued' ? (
+        <span className="queue-item__actions">
+          <span className="queue-item__status">Queued</span>
+          {onStart && <button className="queue-item__start" onClick={onStart} aria-label={`Start download for ${name}`}>▶</button>}
+        </span>
+      ) : item.status === 'pending' || downloading ? (
+        <span className="queue-item__actions">
+          {!hasProgress && <span className="queue-item__spinner" aria-hidden="true" />}
+          <span className="queue-item__status">
+            {item.status === 'pending' ? 'Starting' : hasProgress ? `Downloading ${item.progress}%` : 'Downloading'}
+          </span>
+        </span>
+      ) : (
+        <span className="queue-item__status" title={item.error}>
+          {item.status === 'analyzing' ? 'Analyzing' : item.status === 'done' ? 'Done' : 'Error'}
+        </span>
+      )}
+      {downloading && (
+        <div
+          className={`queue-item__progress${hasProgress ? '' : ' queue-item__progress--indeterminate'}`}
+          role="progressbar"
+          aria-label={`Download progress for ${name}`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={hasProgress ? item.progress : undefined}
+        >
+          <span className="queue-item__progress-fill" style={hasProgress ? { width: `${item.progress}%` } : undefined} />
+        </div>
+      )}
     </div>
   );
 }

@@ -3,7 +3,8 @@
 //! Per-pixel alpha via UpdateLayeredWindow; raw-vtable IDropTarget for browser URL drops.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::collections::HashMap;
+use std::sync::{atomic::{AtomicIsize, Ordering}, LazyLock, Mutex};
 use uuid::Uuid;
 
 use windows::{
@@ -29,25 +30,70 @@ use windows::{
             WindowsAndMessaging::{
                 CS_HREDRAW, CS_VREDRAW, CREATESTRUCTW, GWLP_USERDATA, MSG, SM_CXSCREEN,
                 SM_CYSCREEN, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
-                ULW_ALPHA, UpdateLayeredWindow, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP,
-                WM_MOUSEMOVE, WM_NCCREATE, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+                ULW_ALPHA, UpdateLayeredWindow, WM_APP, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP,
+                WM_MOUSEMOVE, WM_NCCREATE, WM_TIMER, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
                 WS_POPUP, WNDCLASSEXW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
                 GetCursorPos, GetDesktopWindow, GetMessageW, GetSystemMetrics, GetWindowLongPtrW,
-                GetWindowRect, PostQuitMessage, RegisterClassExW, SetWindowLongPtrW, SetWindowPos,
-                ShowWindow, TranslateMessage,
+                GetWindowRect, KillTimer, PostMessageW, PostQuitMessage, RegisterClassExW,
+                SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage,
             },
         },
     },
 };
 
 pub static CIRCLE_HWND: AtomicIsize = AtomicIsize::new(0);
+// The map is updated by download tasks; only the circle window thread renders it.
+static DOWNLOADS: LazyLock<Mutex<HashMap<String, Option<u8>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn downloads() -> std::sync::MutexGuard<'static, HashMap<String, Option<u8>>> {
+    match DOWNLOADS.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+const WM_DOWNLOAD_CHANGE: u32 = WM_APP + 1;
+const ANIMATION_TIMER: usize = 1;
+const ANIMATION_INTERVAL_MS: u32 = 50;
+
+fn notify_download_change() {
+    let hwnd = CIRCLE_HWND.load(Ordering::Acquire);
+    if hwnd != 0 {
+        unsafe {
+            let _ = PostMessageW(HWND(hwnd as *mut c_void), WM_DOWNLOAD_CHANGE, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+pub fn download_started(id: &str) {
+    downloads().insert(id.to_owned(), None);
+    notify_download_change();
+}
+
+pub fn download_progress(id: &str, percent: u8) {
+    let mut downloads = downloads();
+    if let Some(value) = downloads.get_mut(id) {
+        if *value != Some(percent) {
+            *value = Some(percent);
+            drop(downloads);
+            notify_download_change();
+        }
+    }
+}
+
+pub fn download_finished(id: &str) {
+    if downloads().remove(id).is_some() {
+        notify_download_change();
+    }
+}
+
 
 const W: i32 = 72;
 const H: i32 = 72;
 
 const COL_BG: (u8, u8, u8) = (0x1a, 0x1a, 0x2e);
-const COL_HOVER: (u8, u8, u8) = (0x2a, 0x2a, 0x4e);
 const COL_RING: (u8, u8, u8) = (0x4a, 0xde, 0x80);
+const COL_RING_TRACK: (u8, u8, u8) = (0x36, 0x58, 0x55);
 
 // ── raw COM types ─────────────────────────────────────────────────────────────
 
@@ -281,12 +327,72 @@ unsafe fn extract_text_from_data_obj(pdata: *mut c_void) -> Option<String> {
 
 // ── rendering ────────────────────────────────────────────────────────────────
 
+struct Surface {
+    mem_dc: HDC,
+    bitmap: HBITMAP,
+    previous_bitmap: HGDIOBJ,
+    bits: *mut c_void,
+}
+
+impl Surface {
+    unsafe fn new() -> Option<Self> {
+        let desktop = HWND(std::ptr::null_mut());
+        let screen_dc = GetDC(desktop);
+        if screen_dc.0.is_null() { return None; }
+        let mem_dc = CreateCompatibleDC(screen_dc);
+        ReleaseDC(desktop, screen_dc);
+        if mem_dc.0.is_null() { return None; }
+
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: W,
+                biHeight: -H,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits = std::ptr::null_mut();
+        let bitmap = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
+            .unwrap_or_default();
+        if bitmap.is_invalid() || bits.is_null() {
+            if !bitmap.is_invalid() { let _ = DeleteObject(bitmap); }
+            let _ = DeleteDC(mem_dc);
+            return None;
+        }
+        let previous_bitmap = SelectObject(mem_dc, bitmap);
+        Some(Self { mem_dc, bitmap, previous_bitmap, bits })
+    }
+}
+
+impl Drop for Surface {
+    fn drop(&mut self) {
+        unsafe {
+            SelectObject(self.mem_dc, self.previous_bitmap);
+            let _ = DeleteObject(self.bitmap);
+            let _ = DeleteDC(self.mem_dc);
+        }
+    }
+}
+
+enum Ring {
+    Idle,
+    Indeterminate(f32),
+    Determinate(u8),
+}
+
 struct CircleState {
     app: tauri::AppHandle,
+    surface: Surface,
     mouse_down: bool,
     dragging: bool,
     cursor_start: POINT,
     win_start: POINT,
+    timer_active: bool,
+    phase: u16,
 }
 
 fn set_pixel(pixels: &mut [u32], x: i32, y: i32, r: u8, g: u8, b: u8, a: u8) {
@@ -300,35 +406,13 @@ fn set_pixel(pixels: &mut [u32], x: i32, y: i32, r: u8, g: u8, b: u8, a: u8) {
         (pa << 24) | ((pr as u32) << 16) | ((pg as u32) << 8) | pb as u32;
 }
 
-unsafe fn redraw(hwnd: HWND, progress: f32, hover: bool) {
-    let screen_dc = GetDC(HWND(std::ptr::null_mut()));
-    let mem_dc = CreateCompatibleDC(screen_dc);
+unsafe fn redraw(hwnd: HWND, state: &CircleState, ring: Ring) {
+    let desktop = HWND(std::ptr::null_mut());
+    let screen_dc = GetDC(desktop);
+    if screen_dc.0.is_null() { return; }
+    let pixels = std::slice::from_raw_parts_mut(state.surface.bits as *mut u32, (W * H) as usize);
 
-    let bmi = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: W,
-            biHeight: -H,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-    let mut bits: *mut c_void = std::ptr::null_mut();
-    let hbmp = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
-        .unwrap_or_default();
-    if hbmp.is_invalid() {
-        DeleteDC(mem_dc);
-        ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
-        return;
-    }
-    let old = SelectObject(mem_dc, hbmp);
-
-    let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (W * H) as usize);
-
-    let (br, bg, bb) = if hover { COL_HOVER } else { COL_BG };
+    let (br, bg, bb) = COL_BG;
     let cx = W as f32 / 2.0;
     let cy = H as f32 / 2.0;
     let radius = cx - 1.5;
@@ -364,25 +448,29 @@ unsafe fn redraw(hwnd: HWND, progress: f32, hover: bool) {
         }
     }
 
-    // Progress ring (green arc)
-    if progress > 0.0 {
+    // A muted track keeps even a measured 0% visibly active. An unknown
+    // percentage rotates only the highlighted quarter, never implying 25%.
+    let arc = match ring {
+        Ring::Idle => None,
+        Ring::Indeterminate(phase) => Some((phase, 0.25)),
+        Ring::Determinate(percent) => Some((0.0, percent as f32 / 100.0)),
+    };
+    if let Some((phase, filled)) = arc {
         let rr = cx - 4.0;
         let steps = 720u32;
         for i in 0..steps {
-            if i as f32 / steps as f32 > progress { break; }
-            let angle = std::f32::consts::FRAC_PI_2 * -1.0
-                + (i as f32 / steps as f32) * 2.0 * std::f32::consts::PI;
+            let fraction = i as f32 / steps as f32;
+            let angle = (phase + fraction) * std::f32::consts::TAU
+                - std::f32::consts::FRAC_PI_2;
+            let (r, g, b) = if fraction < filled { COL_RING } else { COL_RING_TRACK };
             for dr in -1i32..=1 {
                 let px = (cx + (rr + dr as f32) * angle.cos()) as i32;
                 let py = (cy + (rr + dr as f32) * angle.sin()) as i32;
-                let base_a = if px >= 0 && py >= 0 && px < W && py < H {
-                    ((pixels[(py * W + px) as usize] >> 24) & 0xFF) as u8
-                } else {
-                    0
-                };
-                if base_a > 128 {
-                    let (rr, rg, rb) = COL_RING;
-                    set_pixel(pixels, px, py, rr, rg, rb, base_a);
+                if px >= 0 && py >= 0 && px < W && py < H {
+                    let base_a = (pixels[(py * W + px) as usize] >> 24) as u8;
+                    if base_a > 128 {
+                        set_pixel(pixels, px, py, r, g, b, base_a);
+                    }
                 }
             }
         }
@@ -398,13 +486,32 @@ unsafe fn redraw(hwnd: HWND, progress: f32, hover: bool) {
     let src_pt = POINT { x: 0, y: 0 };
     let _ = UpdateLayeredWindow(
         hwnd, screen_dc, None, Some(&size),
-        mem_dc, Some(&src_pt), COLORREF(0), Some(&blend), ULW_ALPHA,
+        state.surface.mem_dc, Some(&src_pt), COLORREF(0), Some(&blend), ULW_ALPHA,
     );
+    ReleaseDC(desktop, screen_dc);
+}
 
-    SelectObject(mem_dc, old);
-    let _ = DeleteObject(hbmp);
-    let _ = DeleteDC(mem_dc);
-    ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+unsafe fn refresh_circle(hwnd: HWND, state: &mut CircleState) {
+    let ring = {
+        let active = downloads();
+        if active.values().any(|percent| percent.is_none()) {
+            Ring::Indeterminate(state.phase as f32 / 32.0)
+        } else if let Some(percent) = active.values().filter_map(|percent| *percent).max() {
+            // Show an actual active download's percentage, not an invented aggregate.
+            Ring::Determinate(percent)
+        } else {
+            Ring::Idle
+        }
+    };
+    let indeterminate = matches!(ring, Ring::Indeterminate(_));
+    if indeterminate && !state.timer_active {
+        state.timer_active = SetTimer(hwnd, ANIMATION_TIMER, ANIMATION_INTERVAL_MS, None) != 0;
+    } else if !indeterminate && state.timer_active {
+        let _ = KillTimer(hwnd, ANIMATION_TIMER);
+        state.timer_active = false;
+        state.phase = 0;
+    }
+    redraw(hwnd, state, ring);
 }
 
 // ── WNDPROC ───────────────────────────────────────────────────────────────────
@@ -420,6 +527,24 @@ unsafe extern "system" fn wnd_proc(
             let cs = &*(lparam.0 as *const CREATESTRUCTW);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, cs.lpCreateParams as isize);
             DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_DOWNLOAD_CHANGE => {
+            let state = state_of(hwnd);
+            if !state.is_null() {
+                refresh_circle(hwnd, &mut *state);
+            }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == ANIMATION_TIMER => {
+            let state = state_of(hwnd);
+            if !state.is_null() {
+                let s = &mut *state;
+                if s.timer_active {
+                    s.phase = (s.phase + 1) % 32;
+                    redraw(hwnd, s, Ring::Indeterminate(s.phase as f32 / 32.0));
+                }
+            }
+            LRESULT(0)
         }
         WM_LBUTTONDOWN => {
             let state = state_of(hwnd);
@@ -471,8 +596,12 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_DESTROY => {
+            CIRCLE_HWND.store(0, Ordering::Release);
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut CircleState;
             if !ptr.is_null() {
+                if (*ptr).timer_active {
+                    let _ = KillTimer(hwnd, ANIMATION_TIMER);
+                }
                 RevokeDragDrop(hwnd);
                 drop(Box::from_raw(ptr));
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -512,12 +641,19 @@ pub fn run(app: tauri::AppHandle) {
 
         let (x, y) = primary_monitor_circle_pos();
 
+        let Some(surface) = Surface::new() else {
+            OleUninitialize();
+            return;
+        };
         let mut state = Box::new(CircleState {
             app: app.clone(),
+            surface,
             mouse_down: false,
             dragging: false,
             cursor_start: POINT::default(),
             win_start: POINT::default(),
+            timer_active: false,
+            phase: 0,
         });
         let state_ptr = Box::as_mut(&mut state) as *mut CircleState;
 
@@ -534,14 +670,14 @@ pub fn run(app: tauri::AppHandle) {
 
         std::mem::forget(state); // owned by WNDPROC via GWLP_USERDATA
 
-        CIRCLE_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
+        CIRCLE_HWND.store(hwnd.0 as isize, Ordering::Release);
 
         // Register OLE drop target (RegisterDragDrop calls AddRef)
         let dt = create_drop_target(app);
         RegisterDragDrop(hwnd, dt);
         dt_release(dt); // release our ref; OLE holds its own
 
-        redraw(hwnd, 0.0, false);
+        refresh_circle(hwnd, &mut *state_ptr);
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
 
         let mut msg = MSG::default();

@@ -25,7 +25,7 @@ export interface Config {
   key_notation: KeyNotation;
 }
 
-export type DownloadStatus = 'queued' | 'downloading' | 'analyzing' | 'done' | 'error';
+export type DownloadStatus = 'queued' | 'pending' | 'downloading' | 'analyzing' | 'done' | 'error';
 
 export interface DownloadItem {
   id: string;

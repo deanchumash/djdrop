@@ -1,29 +1,48 @@
-import { render, screen } from '@testing-library/react';
-import { describe, it, expect } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
 import { QueueItem } from './QueueItem';
 import type { DownloadItem } from '../types';
 
-const done: DownloadItem = {
-  id: '1', input: 'https://youtube.com/watch?v=x',
-  track_name: 'HUMBLE.', file_path: '/music/humble.mp3',
-  source: 'youtube', bpm: 150, key: 'Am', status: 'done',
-};
+const item: DownloadItem = { id: '1', input: 'search query', status: 'queued' };
 
 describe('QueueItem', () => {
-  it('renders track name', () => {
-    render(<QueueItem item={done} />);
-    expect(screen.getByText('HUMBLE.')).toBeTruthy();
+  it('keeps a manual item startable only until it has been initiated', () => {
+    const onStart = vi.fn();
+    const { rerender } = render(<QueueItem item={item} onStart={onStart} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Start download for search query' }));
+    expect(onStart).toHaveBeenCalledOnce();
+
+    rerender(<QueueItem item={{ ...item, status: 'pending' }} />);
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByText('Starting')).toBeTruthy();
+    expect(screen.queryByRole('progressbar')).toBeNull();
   });
 
-  it('renders BPM and key', () => {
-    render(<QueueItem item={done} />);
-    expect(screen.getByText('150')).toBeTruthy();
-    expect(screen.getByText('Am')).toBeTruthy();
+  it('shows unknown progress without a numeric value until actual progress arrives', () => {
+    const { rerender } = render(<QueueItem item={{ ...item, status: 'downloading' }} />);
+    const progress = screen.getByRole('progressbar');
+    expect(progress.getAttribute('aria-valuenow')).toBeNull();
+    expect(screen.getByText('Downloading')).toBeTruthy();
+    expect(screen.queryByText(/%/)).toBeNull();
+
+    rerender(<QueueItem item={{ ...item, status: 'downloading', progress: 0 }} />);
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('0');
+    expect(screen.getByText('Downloading 0%')).toBeTruthy();
+
+    rerender(<QueueItem item={{ ...item, status: 'downloading', progress: 67 }} />);
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('67');
+    expect(screen.getByText('Downloading 67%')).toBeTruthy();
+
+    rerender(<QueueItem item={{ ...item, status: 'analyzing' }} />);
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(screen.getByText('Analyzing')).toBeTruthy();
   });
 
-  it('shows input when no track_name yet', () => {
-    const queued: DownloadItem = { id: '2', input: 'search query', status: 'queued' };
-    render(<QueueItem item={queued} />);
-    expect(screen.getByText('search query')).toBeTruthy();
+  it('distinguishes completion and errors from in-progress work', () => {
+    const { rerender } = render(<QueueItem item={{ ...item, status: 'done' }} />);
+    expect(screen.getByText('Done')).toBeTruthy();
+    rerender(<QueueItem item={{ ...item, status: 'error', error: 'No matching track' }} />);
+    expect(screen.getByText('Error').getAttribute('title')).toBe('No matching track');
+    expect(screen.queryByRole('progressbar')).toBeNull();
   });
 });
