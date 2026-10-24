@@ -38,6 +38,19 @@ describe('QueueItem', () => {
     expect(screen.getByText('Analyzing')).toBeTruthy();
   });
 
+  it('names the source being checked until real progress replaces it', () => {
+    const { rerender } = render(<QueueItem item={{ ...item, status: 'downloading', stage: 'Soulseek' }} />);
+    expect(screen.getByText('Checking Soulseek…')).toBeTruthy();
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBeNull();
+
+    rerender(<QueueItem item={{ ...item, status: 'downloading', stage: 'Bandcamp' }} />);
+    expect(screen.getByText('Checking Bandcamp…')).toBeTruthy();
+
+    rerender(<QueueItem item={{ ...item, status: 'downloading', progress: 40 }} />);
+    expect(screen.getByText('Downloading 40%')).toBeTruthy();
+    expect(screen.queryByText(/Checking/)).toBeNull();
+  });
+
   it('shows the full failure reason without hover and removes it after completion', () => {
     const message = 'no audio file found in output dir: YT-DLP download error - https://soundcloud.com/ennedyalone/fun-1';
     const { rerender } = render(<QueueItem item={{ ...item, status: 'error', error: message }} />);

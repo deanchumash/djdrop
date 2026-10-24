@@ -13,6 +13,8 @@ pub struct ProgressPayload { pub id: String, pub percent: u8 }
 #[derive(Clone, Serialize)]
 struct StartedPayload { id: String }
 #[derive(Clone, Serialize)]
+struct StagePayload { id: String, stage: String }
+#[derive(Clone, Serialize)]
 pub struct DonePayload {
     pub id: String,
     pub file_path: String,
@@ -203,6 +205,7 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
         };
         let mut meta: Option<TrackMeta> = None;
         if login.is_some() && url.contains("/track/") {
+            emit_stage(app, id, "track info");
             match spotify_track_meta(&spotdl_bin, &tools_path, url, &job_dir).await {
                 Ok(m) => meta = Some(m),
                 Err(e) => failures.push(format!("Soulseek: {e}")),
@@ -211,12 +214,14 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
 
         let (file_path, source) = 'found: {
             if let (Some(login), Some(meta)) = (&login, &meta) {
+                emit_stage(app, id, "Soulseek");
                 match crate::soulseek::download(app, id, login, meta, output_dir).await {
                     Ok(path) => break 'found (path, Some("soulseek")),
                     Err(e) => failures.push(format!("Soulseek: {e}")),
                 }
             }
 
+            emit_stage(app, id, "YouTube & SoundCloud");
             match spotdl_attempt(
                 &spotdl_bin, &ffmpeg, &tools_path, url,
                 &["youtube", "youtube-music", "soundcloud"], &job_dir.join("primary"), output_path,
@@ -228,11 +233,13 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
             // spotDL's own result filter can reject the right upload (e.g. an artist
             // channel titled "Remedy (feat. X)"); accept a YouTube result only when
             // title, lead artist and duration all agree with Spotify's metadata.
+            if meta.is_none() && url.contains("/track/") { emit_stage(app, id, "track info"); }
             let known = match &meta {
                 Some(m) => Ok(Some(m.clone())),
                 None if url.contains("/track/") => spotify_track_meta(&spotdl_bin, &tools_path, url, &job_dir).await.map(Some),
                 None => Ok(None),
             };
+            if matches!(known, Ok(Some(_))) { emit_stage(app, id, "YouTube (verified match)"); }
             match known {
                 Ok(Some(m)) => match verified_youtube_match(app, &tools_path, &m).await {
                     Ok(Some(youtube_url)) => match spotdl_attempt(
@@ -249,6 +256,7 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
                 Err(e) => failures.push(format!("Verified YouTube match: {e}")),
             }
 
+            emit_stage(app, id, "Bandcamp");
             match spotdl_attempt(
                 &spotdl_bin, &ffmpeg, &tools_path, url,
                 &["bandcamp"], &job_dir.join("bandcamp"), output_path,
@@ -439,6 +447,12 @@ async fn run_http_download(
 
     finish_download(app, id, &file_path, Some(source)).await;
     Ok(())
+}
+
+/// Tell the UI which source is being checked ("Soulseek", "Bandcamp", ...).
+/// Resets any progress from a previous source until the next one reports.
+pub(crate) fn emit_stage(app: &AppHandle, id: &str, stage: &str) {
+    let _ = app.emit("download:stage", StagePayload { id: id.to_string(), stage: stage.to_string() });
 }
 
 pub(crate) fn emit_progress(app: &AppHandle, id: &str, percent: u8) {

@@ -23,10 +23,18 @@ export function useDownloads() {
           d.id === payload.id && d.status === 'pending' ? { ...d, status: 'downloading' } : d
         ));
       }),
+      // A new source is being checked: forget the previous source's progress.
+      listen<{ id: string; stage: string }>('download:stage', ({ payload }) => {
+        setDownloads(prev => prev.map(d =>
+          d.id === payload.id && (d.status === 'pending' || d.status === 'downloading')
+            ? { ...d, status: 'downloading', stage: payload.stage, progress: undefined }
+            : d
+        ));
+      }),
       listen<ProgressPayload>('download:progress', ({ payload }) => {
         setDownloads(prev => prev.map(d =>
           d.id === payload.id && (d.status === 'pending' || d.status === 'downloading')
-            ? { ...d, progress: payload.percent, status: 'downloading' }
+            ? { ...d, progress: payload.percent, status: 'downloading', stage: undefined }
             : d
         ));
       }),
@@ -37,13 +45,14 @@ export function useDownloads() {
                 ...d,
                 file_path: payload.file_path, track_name: payload.track_name, source: payload.source,
                 format: payload.format, bitrate: payload.bitrate ?? undefined, status: 'analyzing',
+                stage: undefined,
               }
             : d
         ));
       }),
       listen<ErrorPayload>('download:error', ({ payload }) => {
         setDownloads(prev => prev.map(d =>
-          d.id === payload.id ? { ...d, status: 'error', error: payload.message } : d
+          d.id === payload.id ? { ...d, status: 'error', error: payload.message, stage: undefined } : d
         ));
       }),
       listen<AnalysisDonePayload>('analysis:done', ({ payload }) => {

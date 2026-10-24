@@ -39,6 +39,8 @@ export interface DownloadItem {
   bpm?: number;
   key?: string;
   progress?: number;
+  /** Source currently being checked ("Soulseek", "Bandcamp", ...) until real progress arrives. */
+  stage?: string;
   status: DownloadStatus;
   error?: string;
 }
