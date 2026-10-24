@@ -196,13 +196,36 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
             &spotdl_bin, &ffmpeg, &tools_path, url,
             &["youtube", "youtube-music", "soundcloud"], &job_dir.join("primary"), output_path,
         ).await;
+        let mut failures = Vec::new();
         let file_path = match primary {
-            Ok(path) => path,
-            Err(primary_error) => spotdl_attempt(
+            Ok(path) => Some(path),
+            Err(e) => { failures.push(format!("Primary sources: {e}")); None }
+        };
+        // spotDL's own result filter can reject the right upload (e.g. an artist
+        // channel titled "Remedy (feat. X)"); accept a YouTube result only when
+        // title, lead artist and duration all agree with Spotify's metadata.
+        let file_path = match file_path {
+            Some(path) => Some(path),
+            None => match verified_youtube_match(app, &spotdl_bin, &tools_path, url, &job_dir).await {
+                Ok(Some(youtube_url)) => match spotdl_attempt(
+                    &spotdl_bin, &ffmpeg, &tools_path, &format!("{youtube_url}|{url}"),
+                    &["youtube"], &job_dir.join("youtube-match"), output_path,
+                ).await {
+                    Ok(path) => Some(path),
+                    Err(e) => { failures.push(format!("Verified YouTube match: {e}")); None }
+                },
+                Ok(None) => { failures.push("Verified YouTube match: no result agreed on title, artist and duration".into()); None }
+                Err(e) => { failures.push(format!("Verified YouTube match: {e}")); None }
+            },
+        };
+        let file_path = match file_path {
+            Some(path) => path,
+            None => spotdl_attempt(
                 &spotdl_bin, &ffmpeg, &tools_path, url,
                 &["bandcamp"], &job_dir.join("bandcamp"), output_path,
             ).await.map_err(|bandcamp_error| {
-                format!("Primary sources: {primary_error}; Bandcamp fallback: {bandcamp_error}")
+                failures.push(format!("Bandcamp fallback: {bandcamp_error}"));
+                failures.join("; ")
             })?,
         };
         // spotDL records the URL it actually downloaded from in the comment tag,
@@ -212,6 +235,40 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
     }.await;
     let _ = std::fs::remove_dir_all(job_dir);
     result
+}
+
+/// Look up the Spotify track's title/artists/duration, search YouTube for it,
+/// and return the URL of a result that verifiably is the same recording.
+/// `Ok(None)` also covers non-track URLs (albums, playlists), which have no
+/// single duration to verify against.
+async fn verified_youtube_match(
+    app: &AppHandle,
+    spotdl_bin: &std::path::Path,
+    tools_path: &std::ffi::OsStr,
+    url: &str,
+    work_dir: &std::path::Path,
+) -> Result<Option<String>, String> {
+    if !url.contains("/track/") { return Ok(None); }
+
+    let meta_file = work_dir.join("meta.spotdl");
+    let mut save = Command::new(spotdl_bin);
+    save.args(["save", url, "--save-file"]).arg(&meta_file)
+        .env("PATH", tools_path).env("COLUMNS", "1000");
+    #[cfg(windows)] save.creation_flags(CREATE_NO_WINDOW);
+    let saved = save.output().await.map_err(|e| format!("spotdl metadata lookup failed: {e}"))?;
+    if !saved.status.success() { return Err("spotdl could not read the track's Spotify metadata".into()); }
+    let meta_json = std::fs::read_to_string(&meta_file).map_err(|e| e.to_string())?;
+    let meta = crate::matcher::parse_track_meta(&meta_json)
+        .ok_or("spotdl returned unreadable track metadata")?;
+
+    let mut search = Command::new(crate::binaries::ytdlp(app)?);
+    search.args(["--flat-playlist", "--dump-json", "--no-warnings"])
+        .arg(format!("ytsearch10:{}", crate::matcher::search_query(&meta)))
+        .env("PATH", tools_path);
+    #[cfg(windows)] search.creation_flags(CREATE_NO_WINDOW);
+    let found = search.output().await.map_err(|e| format!("YouTube search failed: {e}"))?;
+    let candidates = crate::matcher::parse_candidates(&String::from_utf8_lossy(&found.stdout));
+    Ok(crate::matcher::pick_candidate(&meta, &candidates).map(|c| c.url.clone()))
 }
 
 async fn spotdl_attempt(
