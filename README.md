@@ -1,6 +1,6 @@
 # djdrop
 
-A Windows Tauri desktop app that downloads audio from YouTube, SoundCloud, and Spotify links. Spotify links supply track metadata; spotDL matches and downloads audio from public sources (not Spotify's audio stream). DRM-protected and unavailable tracks cannot be downloaded.
+A Windows Tauri desktop app that downloads audio from YouTube, SoundCloud, and Spotify links. Spotify links supply track metadata; spotDL matches audio from YouTube, YouTube Music, then SoundCloud (not Spotify's audio stream). Successful Spotify downloads are moved from a per-job folder into the configured output directory. DRM-protected and unavailable tracks cannot be downloaded.
 
 ## Build and run
 

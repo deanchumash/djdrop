@@ -32,7 +32,7 @@ pub fn ytdlp_args(url: &str, output_dir: &str, ffmpeg_dir: &str) -> Vec<String> 
 pub fn spotdl_args(url: &str, output_dir: &str, ffmpeg: &str) -> Vec<String> {
     vec![
         "download".into(), url.into(),
-        "--audio".into(), "youtube".into(), "youtube-music".into(),
+        "--audio".into(), "youtube".into(), "youtube-music".into(), "soundcloud".into(),
         "--output".into(), output_dir.into(),
         "--format".into(), "mp3".into(),
         "--bitrate".into(), "320k".into(),
@@ -193,7 +193,8 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
     let ffmpeg = crate::binaries::ffmpeg_dir(app)?.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
     // spotdl can exit successfully despite a failed audio download. Isolate
     // this invocation so an older MP3 cannot be reported as its result.
-    let job_dir = std::path::Path::new(output_dir).join(format!(".djdrop-{}", uuid::Uuid::new_v4()));
+    // spotDL removes a leading dot from --output, so use a visible job directory.
+    let job_dir = std::path::Path::new(output_dir).join(format!("djdrop-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&job_dir).map_err(|e| e.to_string())?;
     let result = async {
         let args = spotdl_args(url, &job_dir.to_string_lossy(), &ffmpeg.to_string_lossy());
