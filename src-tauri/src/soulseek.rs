@@ -23,7 +23,7 @@ const MAX_ATTEMPTS: usize = 3;
 /// from search start. Stop once responses have settled, with a hard ceiling.
 const SEARCH_PLATEAU: Duration = Duration::from_secs(3);
 const SEARCH_LIMIT: Duration = Duration::from_secs(20);
-const SEARCH_FINALIZE_LIMIT: Duration = Duration::from_secs(5);
+const SEARCH_FINALIZE_LIMIT: Duration = Duration::from_secs(10);
 const SEARCH_REQUEST_LIMIT: Duration = Duration::from_secs(3);
 /// Peers often queue requests behind other users; don't wait forever for one.
 const QUEUE_PATIENCE: Duration = Duration::from_secs(60);
@@ -390,6 +390,27 @@ async fn search_state(client: &reqwest::Client, url: &str) -> Result<Value, Stri
         .map_err(|e| format!("failed to read slskd search state: {e}"))
 }
 
+/// slskd can report completion before its response list is queryable. A
+/// nonzero response count with an empty list is not a negative search result.
+async fn search_responses(client: &reqwest::Client, search_url: &str, response_count: u64) -> Result<Value, String> {
+    let deadline = Instant::now() + SEARCH_FINALIZE_LIMIT;
+    let url = format!("{search_url}/responses");
+    loop {
+        let responses: Value = tokio::time::timeout(SEARCH_REQUEST_LIMIT, async {
+            client.get(&url).send().await?.error_for_status()?.json().await
+        }).await.map_err(|_| "timed out reading slskd search responses".to_string())?
+            .map_err(|e| format!("failed to read slskd search responses: {e}"))?;
+        let Some(items) = responses.as_array() else {
+            return Err("slskd returned invalid search responses".into());
+        };
+        if response_count == 0 || !items.is_empty() { return Ok(responses); }
+        if Instant::now() >= deadline {
+            return Err("slskd finalized a search with responses missing".into());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 // ── download ─────────────────────────────────────────────────────────────────
 
 /// Search Soulseek for the track and download the best verified match into
@@ -447,17 +468,9 @@ pub async fn download(
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     };
-    let responses: Value = tokio::time::timeout(SEARCH_REQUEST_LIMIT, async {
-        client.get(format!("{search_url}/responses")).send().await?.error_for_status()?.json().await
-    }).await.map_err(|_| "timed out reading slskd search responses".to_string())?
-        .map_err(|e| format!("failed to read slskd search responses: {e}"))?;
-    let Some(items) = responses.as_array() else {
-        return Err("slskd returned invalid search responses".into());
-    };
-    if response_count > 0 && items.is_empty() {
-        return Err("slskd finalized a search with responses missing".into());
-    }
+    let result = search_responses(&client, &search_url, response_count).await;
     let _ = client.delete(&search_url).send().await;
+    let responses = result?;
 
     let candidates = top_candidates(rank_files(meta, &responses));
     if candidates.is_empty() {
@@ -658,6 +671,30 @@ mod tests {
         assert!(search_action(&cancelled, start, start, &mut plateau, false).is_err());
         assert_eq!(search_action(&cancelled, start, start, &mut plateau, true).unwrap(), SearchAction::Finished);
         assert!(search_action(&json!({"isComplete": false}), start, start, &mut plateau, false).is_err());
+    }
+
+    #[tokio::test]
+    async fn waits_for_peer_responses_after_search_reports_completion() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/searches/test", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for body in [r#"[]"#, r#"[{"username":"peer","files":[]}]"#] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 1024];
+                stream.read(&mut request).await.unwrap();
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(reply.as_bytes()).await.unwrap();
+            }
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let responses = search_responses(&client, &url, 1).await.unwrap();
+        assert_eq!(responses[0]["username"], "peer");
+        server.await.unwrap();
     }
 
     #[test]
