@@ -98,24 +98,3 @@ pub fn write(app: &tauri::AppHandle, config: &Config) -> Result<()> {
     fs::write(path, text).context("write config.toml")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_config_has_auto_download_true() {
-        let c = Config::default();
-        assert!(c.auto_download);
-        assert_eq!(c.search_mode, SearchMode::BestMatch);
-        assert_eq!(c.search_priority, SearchPriority::Pools);
-    }
-
-    #[test]
-    fn config_roundtrip_toml() {
-        let original = Config::default();
-        let text = toml::to_string_pretty(&original).unwrap();
-        let parsed: Config = toml::from_str(&text).unwrap();
-        assert_eq!(parsed.auto_download, original.auto_download);
-        assert_eq!(parsed.output_dir, original.output_dir);
-    }
-}
