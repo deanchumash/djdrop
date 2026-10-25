@@ -19,6 +19,12 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const DURATION_TOLERANCE_SECS: f64 = 3.0;
 /// How many ranked candidates to try before giving up on Soulseek.
 const MAX_ATTEMPTS: usize = 3;
+/// Soulseek.NET's search timeout is measured from the *last* response, not
+/// from search start. Stop once responses have settled, with a hard ceiling.
+const SEARCH_PLATEAU: Duration = Duration::from_secs(3);
+const SEARCH_LIMIT: Duration = Duration::from_secs(20);
+const SEARCH_FINALIZE_LIMIT: Duration = Duration::from_secs(5);
+const SEARCH_REQUEST_LIMIT: Duration = Duration::from_secs(3);
 /// Peers often queue requests behind other users; don't wait forever for one.
 const QUEUE_PATIENCE: Duration = Duration::from_secs(60);
 const STALL_LIMIT: Duration = Duration::from_secs(60);
@@ -39,10 +45,13 @@ static SESSION: Mutex<Option<Slskd>> = Mutex::const_new(None);
 
 /// The user's Soulseek login: refs from Settings (literal or `op://`), else the
 /// OS keychain entry saved by "Save to keychain". `Ok(None)` = not configured.
-pub async fn credentials(app: &AppHandle) -> Result<Option<(String, String)>, String> {
+pub async fn credentials(app: &AppHandle, id: &str) -> Result<Option<(String, String)>, String> {
     let cfg = crate::config::read(app).map_err(|e| e.to_string())?;
     let refs = &cfg.pools.soulseek;
     if !refs.username_ref.is_empty() || !refs.password_ref.is_empty() {
+        if crate::credentials::is_op_ref(&refs.username_ref) || crate::credentials::is_op_ref(&refs.password_ref) {
+            crate::downloader::emit_stage(app, id, "1Password");
+        }
         let (u, p) = crate::credentials::resolve(&refs.username_ref, &refs.password_ref).await?;
         return Ok((!u.is_empty() && !p.is_empty()).then_some((u, p)));
     }
@@ -327,6 +336,58 @@ fn find_transfer<'a>(value: &'a Value, filename: &str) -> Option<&'a Value> {
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum SearchAction { Wait, Stop, Finished }
+
+/// `responseCount` is updated during the search, but `/responses` is only
+/// persisted at finalization. `endedAt` is written together with those results.
+fn search_action(
+    state: &Value,
+    started: Instant,
+    now: Instant,
+    plateau: &mut Option<(u64, Instant)>,
+    stopped: bool,
+) -> Result<SearchAction, String> {
+    let complete = state["isComplete"].as_bool()
+        .ok_or("slskd returned a search without isComplete")?;
+    let count = state["responseCount"].as_u64()
+        .ok_or("slskd returned a search without responseCount")?;
+    let (errored, cancelled) = match &state["state"] {
+        Value::String(s) => (
+            s.split(',').any(|flag| flag.trim().eq_ignore_ascii_case("Errored")),
+            s.split(',').any(|flag| flag.trim().eq_ignore_ascii_case("Cancelled")),
+        ),
+        Value::Number(n) => {
+            let flags = n.as_u64().ok_or("slskd returned an invalid search state")?;
+            (flags & 128 != 0, flags & 8 != 0)
+        }
+        _ => return Err("slskd returned an invalid search state".into()),
+    };
+    if errored { return Err("slskd search failed".into()); }
+    if cancelled && !stopped { return Err("slskd search was cancelled unexpectedly".into()); }
+    if complete {
+        // isComplete can be set before the background task saves responses.
+        return Ok(if state["endedAt"].as_str().is_some() { SearchAction::Finished } else { SearchAction::Wait });
+    }
+    if now.duration_since(started) >= SEARCH_LIMIT { return Ok(SearchAction::Stop); }
+    if count > 0 {
+        match plateau {
+            Some((last_count, since)) if *last_count == count => {
+                if now.duration_since(*since) >= SEARCH_PLATEAU { return Ok(SearchAction::Stop); }
+            }
+            _ => *plateau = Some((count, now)),
+        }
+    }
+    Ok(SearchAction::Wait)
+}
+
+async fn search_state(client: &reqwest::Client, url: &str) -> Result<Value, String> {
+    tokio::time::timeout(SEARCH_REQUEST_LIMIT, async {
+        client.get(url).send().await?.error_for_status()?.json().await
+    }).await.map_err(|_| "timed out reading slskd search state".to_string())?
+        .map_err(|e| format!("failed to read slskd search state: {e}"))
+}
+
 // ── download ─────────────────────────────────────────────────────────────────
 
 /// Search Soulseek for the track and download the best verified match into
@@ -356,16 +417,45 @@ pub async fn download(
     }
 
     let started = Instant::now();
-    loop {
+    let search_url = format!("{base}/searches/{search_id}");
+    let mut plateau = None;
+    let mut finalize_by = None;
+    let mut stopped = false;
+    let response_count = loop {
         touch(port).await;
-        let state: Value = client.get(format!("{base}/searches/{search_id}")).send().await
-            .map_err(|e| e.to_string())?.json().await.unwrap_or_default();
-        if state["isComplete"].as_bool() == Some(true) || started.elapsed() > Duration::from_secs(30) { break; }
+        let state = search_state(&client, &search_url).await?;
+        let now = Instant::now();
+        let action = search_action(&state, started, now, &mut plateau, stopped)?;
+        if action == SearchAction::Finished { break state["responseCount"].as_u64().unwrap(); }
+        if action == SearchAction::Stop && finalize_by.is_none() {
+            // PUT asks slskd to stop; it does not wait for its background task
+            // to persist responses. Never DELETE or read /responses yet.
+            tokio::time::timeout(SEARCH_REQUEST_LIMIT, client.put(&search_url).send())
+                .await.map_err(|_| "timed out stopping slskd search".to_string())?
+                .map_err(|e| format!("failed to stop slskd search: {e}"))?
+                .error_for_status().map_err(|e| format!("slskd could not stop search: {e}"))?;
+            finalize_by = Some(Instant::now() + SEARCH_FINALIZE_LIMIT);
+            stopped = true;
+        }
+        if state["isComplete"].as_bool() == Some(true) {
+            finalize_by.get_or_insert(now + SEARCH_FINALIZE_LIMIT);
+        }
+        if finalize_by.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err("slskd search did not finalize after stopping/completing".into());
+        }
         tokio::time::sleep(Duration::from_secs(1)).await;
+    };
+    let responses: Value = tokio::time::timeout(SEARCH_REQUEST_LIMIT, async {
+        client.get(format!("{search_url}/responses")).send().await?.error_for_status()?.json().await
+    }).await.map_err(|_| "timed out reading slskd search responses".to_string())?
+        .map_err(|e| format!("failed to read slskd search responses: {e}"))?;
+    let Some(items) = responses.as_array() else {
+        return Err("slskd returned invalid search responses".into());
+    };
+    if response_count > 0 && items.is_empty() {
+        return Err("slskd finalized a search with responses missing".into());
     }
-    let responses: Value = client.get(format!("{base}/searches/{search_id}/responses")).send().await
-        .map_err(|e| e.to_string())?.json().await.unwrap_or_default();
-    let _ = client.delete(format!("{base}/searches/{search_id}")).send().await;
+    let _ = client.delete(&search_url).send().await;
 
     let candidates = top_candidates(rank_files(meta, &responses));
     if candidates.is_empty() {
@@ -527,6 +617,45 @@ mod tests {
     }
     fn peer(user: &str, free: bool, queue: i64, files: Vec<Value>) -> Value {
         json!({"username": user, "hasFreeUploadSlot": free, "queueLength": queue, "uploadSpeed": 500, "files": files})
+    }
+
+    #[test]
+    fn stops_after_a_nonempty_response_plateau_and_restarts_on_growth() {
+        let start = Instant::now();
+        let mut plateau = None;
+        let state = |count| json!({"isComplete": false, "responseCount": count, "state": "InProgress"});
+        assert_eq!(search_action(&state(2), start, start + Duration::from_secs(1), &mut plateau, false).unwrap(), SearchAction::Wait);
+        assert_eq!(search_action(&state(2), start, start + SEARCH_PLATEAU, &mut plateau, false).unwrap(), SearchAction::Wait);
+        assert_eq!(search_action(&state(5), start, start + Duration::from_secs(4), &mut plateau, false).unwrap(), SearchAction::Wait);
+        assert_eq!(search_action(&state(5), start, start + Duration::from_secs(4) + SEARCH_PLATEAU, &mut plateau, false).unwrap(), SearchAction::Stop);
+    }
+
+    #[test]
+    fn empty_search_waits_for_results_but_has_a_fixed_ceiling() {
+        let start = Instant::now();
+        let mut plateau = None;
+        let empty = json!({"isComplete": false, "responseCount": 0, "state": "InProgress"});
+        assert_eq!(search_action(&empty, start, start + SEARCH_PLATEAU, &mut plateau, false).unwrap(), SearchAction::Wait);
+        let active = json!({"isComplete": false, "responseCount": 10, "state": "InProgress"});
+        assert_eq!(search_action(&active, start, start + SEARCH_LIMIT - Duration::from_secs(1), &mut plateau, false).unwrap(), SearchAction::Wait);
+        assert_eq!(search_action(&active, start, start + SEARCH_LIMIT, &mut plateau, false).unwrap(), SearchAction::Stop);
+        assert_eq!(search_action(&empty, start, start + SEARCH_LIMIT, &mut plateau, false).unwrap(), SearchAction::Stop);
+    }
+
+    #[test]
+    fn incomplete_or_errored_search_cannot_be_read_as_no_candidates() {
+        let start = Instant::now();
+        let mut plateau = None;
+        let completing = json!({"isComplete": true, "responseCount": 4, "state": "Completed", "endedAt": null});
+        assert_eq!(search_action(&completing, start, start, &mut plateau, false).unwrap(), SearchAction::Wait);
+        let finalized = json!({"isComplete": true, "responseCount": 4, "state": "Completed", "endedAt": "2026-10-24T00:00:00Z"});
+        assert_eq!(search_action(&finalized, start, start, &mut plateau, false).unwrap(), SearchAction::Finished);
+        let failed = json!({"isComplete": true, "responseCount": 0, "state": "Completed, Errored", "endedAt": "2026-10-24T00:00:00Z"});
+        assert!(search_action(&failed, start, start, &mut plateau, false).is_err());
+        let cancelled = json!({"isComplete": true, "responseCount": 0, "state": 12, "endedAt": "2026-10-24T00:00:00Z"});
+        assert!(search_action(&cancelled, start, start, &mut plateau, false).is_err());
+        assert_eq!(search_action(&cancelled, start, start, &mut plateau, true).unwrap(), SearchAction::Finished);
+        assert!(search_action(&json!({"isComplete": false}), start, start, &mut plateau, false).is_err());
     }
 
     #[test]

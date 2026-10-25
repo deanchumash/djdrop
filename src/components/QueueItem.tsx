@@ -116,6 +116,7 @@ export function QueueItem({ item, onStart, keyNotation = 'musical' }: Props) {
           <span className="queue-item__status">
             {item.status === 'pending' ? 'Starting'
               : hasProgress ? `Downloading ${item.progress}%`
+              : item.stage === '1Password' ? 'Waiting for 1Password…'
               : item.stage ? `Checking ${item.stage}…`
               : 'Downloading'}
           </span>

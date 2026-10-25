@@ -81,6 +81,7 @@ pub async fn run_download(app: AppHandle, id: String, source: DownloadSource, in
             match crate::config::read(&app).map_err(|e| e.to_string()) {
                 Err(e) => Err(e),
                 Ok(cfg) => {
+                    emit_credential_stage(&app, &id, &cfg.pools.qobuz.username_ref, &cfg.pools.qobuz.password_ref);
                     let fut = crate::credentials::resolve(
                         &cfg.pools.qobuz.username_ref,
                         &cfg.pools.qobuz.password_ref,
@@ -191,14 +192,15 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
 
         // Soulseek first when the user is logged in: it is the only source that
         // yields FLAC / 320 kbps files rather than a re-encoded ~130 kbps stream.
-        let login = match crate::soulseek::credentials(app).await {
+        let login = match crate::soulseek::credentials(app, id).await {
             Ok(login) => login,
             Err(e) => { failures.push(format!("Soulseek: {e}")); None }
         };
+        let track_id = spotify_track_id(url);
         let mut meta: Option<TrackMeta> = None;
-        if login.is_some() && url.contains("/track/") {
+        if let (Some(_), Some(track_id)) = (&login, track_id.as_deref()) {
             emit_stage(app, id, "track info");
-            match spotify_track_meta(&spotdl_bin, &tools_path, url, &job_dir).await {
+            match spotify_track_meta(track_id).await {
                 Ok(m) => meta = Some(m),
                 Err(e) => failures.push(format!("Soulseek: {e}")),
             }
@@ -225,11 +227,11 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
             // spotDL's own result filter can reject the right upload (e.g. an artist
             // channel titled "Remedy (feat. X)"); accept a YouTube result only when
             // title, lead artist and duration all agree with Spotify's metadata.
-            if meta.is_none() && url.contains("/track/") { emit_stage(app, id, "track info"); }
-            let known = match &meta {
-                Some(m) => Ok(Some(m.clone())),
-                None if url.contains("/track/") => spotify_track_meta(&spotdl_bin, &tools_path, url, &job_dir).await.map(Some),
-                None => Ok(None),
+            if meta.is_none() && track_id.is_some() { emit_stage(app, id, "track info"); }
+            let known = match (&meta, track_id.as_deref()) {
+                (Some(m), _) => Ok(Some(m.clone())),
+                (None, Some(track_id)) => spotify_track_meta(track_id).await.map(Some),
+                (None, None) => Ok(None),
             };
             if matches!(known, Ok(Some(_))) { emit_stage(app, id, "YouTube (verified match)"); }
             match known {
@@ -266,22 +268,69 @@ async fn run_spotdl(app: &AppHandle, id: &str, url: &str, output_dir: &str) -> R
     result
 }
 
-/// The Spotify track's title, artists and duration, via `spotdl save`.
-async fn spotify_track_meta(
-    spotdl_bin: &std::path::Path,
-    tools_path: &std::ffi::OsStr,
-    url: &str,
-    work_dir: &std::path::Path,
-) -> Result<TrackMeta, String> {
-    let meta_file = work_dir.join("meta.spotdl");
-    let mut save = Command::new(spotdl_bin);
-    save.args(["save", url, "--save-file"]).arg(&meta_file)
-        .env("PATH", tools_path).env("COLUMNS", "1000");
-    #[cfg(windows)] save.creation_flags(CREATE_NO_WINDOW);
-    let saved = save.output().await.map_err(|e| format!("spotdl metadata lookup failed: {e}"))?;
-    if !saved.status.success() { return Err("spotdl could not read the track's Spotify metadata".into()); }
-    let meta_json = std::fs::read_to_string(&meta_file).map_err(|e| e.to_string())?;
-    crate::matcher::parse_track_meta(&meta_json).ok_or_else(|| "spotdl returned unreadable track metadata".into())
+/// Extract a track ID only from an actual HTTPS Spotify track URL.
+fn spotify_track_id(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    if parsed.scheme() != "https" || parsed.host_str()? != "open.spotify.com"
+        || parsed.port().is_some() || !parsed.username().is_empty() || parsed.password().is_some()
+    {
+        return None;
+    }
+    let mut segments = parsed.path_segments()?;
+    let first = segments.next()?;
+    let kind = if first.starts_with("intl-") { segments.next()? } else { first };
+    let id = segments.next()?;
+    if kind != "track" || segments.next().is_some()
+        || id.len() != 22 || !id.bytes().all(|b| b.is_ascii_alphanumeric())
+    {
+        return None;
+    }
+    Some(id.to_string())
+}
+
+/// Read the track's title, artists and duration from Spotify's public embed page.
+async fn spotify_track_meta(id: &str) -> Result<TrackMeta, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let html = client.get(format!("https://open.spotify.com/embed/track/{id}"))
+        .send().await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|e| format!("Spotify track info request failed: {e}"))?
+        .text().await
+        .map_err(|e| format!("Spotify track info response failed: {e}"))?;
+    parse_spotify_embed(&html).ok_or_else(|| "Spotify returned unreadable track info".into())
+}
+
+/// Next.js embeds the public track data as JSON in a script tag.
+fn parse_spotify_embed(html: &str) -> Option<TrackMeta> {
+    let json = html.split("<script").skip(1).find_map(|script| {
+        let (attributes, body) = script.split_once('>')?;
+        if !attributes.contains("id=\"__NEXT_DATA__\"")
+            && !attributes.contains("id='__NEXT_DATA__'")
+        {
+            return None;
+        }
+        body.split_once("</script>").map(|(json, _)| json)
+    })?;
+    let data: serde_json::Value = serde_json::from_str(json).ok()?;
+    let entity = data.pointer("/props/pageProps/state/data/entity")?;
+    let name = entity.get("name")?.as_str()?;
+    if name.trim().is_empty() { return None; }
+    let artists: Vec<String> = entity.get("artists")?.as_array()?.iter()
+        .map(|artist| artist.get("name")?.as_str()
+            .filter(|name| !name.trim().is_empty()).map(str::to_string))
+        .collect::<Option<_>>()?;
+    if artists.is_empty() { return None; }
+    let duration_ms = entity.get("duration")?.as_u64()?;
+    if duration_ms == 0 { return None; }
+    Some(TrackMeta {
+        name: name.to_string(),
+        artists,
+        duration_secs: duration_ms as f64 / 1000.0,
+    })
 }
 
 /// Search YouTube for the track and return the URL of a result that verifiably
@@ -390,6 +439,7 @@ async fn run_pool(app: &AppHandle, id: &str, pool: &Pool, query: &str, output_di
     if refs.username_ref.is_empty() || refs.password_ref.is_empty() {
         return Err(format!("Set both {name} credential references in Settings"));
     }
+    emit_credential_stage(app, id, &refs.username_ref, &refs.password_ref);
     let (username, password) = crate::credentials::resolve(&refs.username_ref, &refs.password_ref).await?;
     emit_stage(app, id, name);
     let resources = crate::binaries::ffmpeg_dir(app)?;
@@ -520,6 +570,12 @@ async fn run_http_download(
     Ok(())
 }
 
+fn emit_credential_stage(app: &AppHandle, id: &str, username_ref: &str, password_ref: &str) {
+    if crate::credentials::is_op_ref(username_ref) || crate::credentials::is_op_ref(password_ref) {
+        emit_stage(app, id, "1Password");
+    }
+}
+
 /// Tell the UI which source is being checked ("Soulseek", "Bandcamp", ...).
 /// Resets any progress from a previous source until the next one reports.
 pub(crate) fn emit_stage(app: &AppHandle, id: &str, stage: &str) {
@@ -607,6 +663,59 @@ fn newest_file_in(dir: &str, exts: &[&str]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spotify_track_url_only_accepts_canonical_spotify_ids() {
+        let id = "4uLU6hMCjMI75M1A2tKUQC";
+        assert_eq!(
+            spotify_track_id(&format!("https://open.spotify.com/track/{id}?si=share")).as_deref(),
+            Some(id),
+        );
+        assert_eq!(
+            spotify_track_id(&format!("https://open.spotify.com/intl-en/track/{id}")).as_deref(),
+            Some(id),
+        );
+        for url in [
+            format!("http://open.spotify.com/track/{id}"),
+            format!("https://open.spotify.com.evil.test/track/{id}"),
+            format!("https://somebody@open.spotify.com/track/{id}"),
+            format!("https://open.spotify.com/album/{id}"),
+            format!("https://open.spotify.com/track/{id}/other"),
+            "https://open.spotify.com/track/x".into(),
+            "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKU%2F".into(),
+        ] {
+            assert_eq!(spotify_track_id(&url), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn spotify_embed_reads_title_artists_and_milliseconds() {
+        let html = r#"<html><script type="application/json" id="__NEXT_DATA__">{"props":{"pageProps":{"state":{"data":{"entity":{"name":"Soul & Soul","artists":[{"name":"Artist One"},{"name":"Artist Two"}],"duration":249626}}}}}}</script></html>"#;
+        let meta = parse_spotify_embed(html).unwrap();
+        assert_eq!(meta.name, "Soul & Soul");
+        assert_eq!(meta.artists, vec!["Artist One".to_string(), "Artist Two".to_string()]);
+        assert_eq!(meta.duration_secs, 249.626);
+        assert_eq!(crate::matcher::search_query(&meta), "Artist One Artist Two Soul & Soul");
+    }
+
+    #[test]
+    fn spotify_embed_rejects_missing_or_malformed_metadata() {
+        assert!(parse_spotify_embed("<html>no track data</html>").is_none());
+        assert!(parse_spotify_embed(r#"<script id="__NEXT_DATA__">not json</script>"#).is_none());
+        assert!(parse_spotify_embed(r#"<script id="__NEXT_DATA__">{}</script>"#).is_none());
+        let invalid_entities = [
+            serde_json::json!({"name":"Song","artists":[{"name":"Artist"}]}),
+            serde_json::json!({"name":"Song","artists":[],"duration":249626}),
+            serde_json::json!({"name":"Song","artists":[{}],"duration":249626}),
+            serde_json::json!({"name":"Song","artists":[{"name":"Artist"}],"duration":"249626"}),
+            serde_json::json!({"name":"Song","artists":[{"name":"Artist"}],"duration":0}),
+        ];
+        for entity in invalid_entities {
+            let data = serde_json::json!({"props":{"pageProps":{"state":{"data":{"entity":entity}}}}});
+            let html = format!(r#"<script id="__NEXT_DATA__">{data}</script>"#);
+            assert!(parse_spotify_embed(&html).is_none(), "{html}");
+        }
+    }
 
     #[test]
     fn spotdl_only_reports_audio_from_its_own_download() {

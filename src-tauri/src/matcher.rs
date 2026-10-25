@@ -4,7 +4,7 @@
 
 use serde_json::Value;
 
-/// A Spotify track as reported by `spotdl save`.
+/// A Spotify track's title, artists and duration from its embed page.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackMeta {
     pub name: String,
@@ -21,20 +21,8 @@ pub struct Candidate {
     pub url: String,
 }
 
-/// Spotify reports whole seconds, so allow rounding plus a little encode slack.
+/// Allow a small difference between Spotify's millisecond duration and the upload's.
 const DURATION_TOLERANCE_SECS: f64 = 3.0;
-
-pub fn parse_track_meta(json: &str) -> Option<TrackMeta> {
-    let value: Value = serde_json::from_str(json).ok()?;
-    let track = value.get(0)?;
-    let artists: Vec<String> = track.get("artists")?.as_array()?.iter()
-        .filter_map(|a| a.as_str().map(str::to_string)).collect();
-    Some(TrackMeta {
-        name: track.get("name")?.as_str()?.to_string(),
-        duration_secs: track.get("duration")?.as_f64()?,
-        artists,
-    })
-}
 
 pub fn parse_candidates(output: &str) -> Vec<Candidate> {
     output.lines().filter_map(|line| {
@@ -145,11 +133,8 @@ mod tests {
     }
 
     #[test]
-    fn parses_spotdl_metadata_and_flat_search_output() {
-        let meta = parse_track_meta(r#"[{"name":"Remedy","artists":["Lizzy Ashliegh","Jared Brady"],"duration":156}]"#).unwrap();
-        assert_eq!(meta, remedy());
-        assert_eq!(search_query(&meta), "Lizzy Ashliegh Jared Brady Remedy");
-        assert!(parse_track_meta("[]").is_none());
+    fn parses_flat_search_output() {
+        assert_eq!(search_query(&remedy()), "Lizzy Ashliegh Jared Brady Remedy");
 
         let out = "{\"id\":\"eupdJBFBuu0\",\"title\":\"Remedy (feat. Jared Brady)\",\"channel\":\"Lizzy Ashliegh\",\"duration\":157,\"url\":\"https://www.youtube.com/watch?v=eupdJBFBuu0\"}\nnot json\n{\"id\":\"abc\",\"title\":\"t\",\"uploader\":\"u\"}\n";
         let found = parse_candidates(out);
