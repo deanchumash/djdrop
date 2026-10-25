@@ -24,10 +24,16 @@ $ytdlpUrl = Get-LatestGitHubAsset -repo "yt-dlp/yt-dlp" -pattern "yt-dlp.exe"
 Invoke-WebRequest -Uri $ytdlpUrl -OutFile "$binDir\yt-dlp.exe" -UseBasicParsing
 Write-Host "      yt-dlp: $([math]::Round((Get-Item "$binDir\yt-dlp.exe").Length / 1MB))MB"
 
-# ffmpeg essentials build (includes libmp3lame)
-Write-Host "[2/5] Downloading ffmpeg (gyan.dev essentials)..."
+# ffmpeg build (includes libmp3lame); use GitHub's build if gyan.dev is unavailable.
+Write-Host "[2/5] Downloading ffmpeg..."
 $ffmpegZip = "$env:TEMP\ffmpeg-essentials-djdrop.zip"
-Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $ffmpegZip -UseBasicParsing
+try {
+    Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $ffmpegZip -UseBasicParsing
+} catch {
+    Write-Warning "gyan.dev ffmpeg download failed; using BtbN's Windows GPL build instead."
+    $ffmpegUrl = Get-LatestGitHubAsset -repo "BtbN/FFmpeg-Builds" -pattern "ffmpeg-master-latest-win64-gpl.zip"
+    Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegZip -UseBasicParsing
+}
 $extractDir = "$env:TEMP\ffmpeg-essentials-djdrop"
 if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
 Expand-Archive -Path $ffmpegZip -DestinationPath $extractDir -Force
