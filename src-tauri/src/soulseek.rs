@@ -274,7 +274,9 @@ pub fn rank_files(meta: &TrackMeta, responses: &Value) -> Vec<Pick> {
         let speed = response["uploadSpeed"].as_i64().unwrap_or(0);
         for file in response["files"].as_array().into_iter().flatten() {
             let Some(filename) = file["filename"].as_str() else { continue };
-            let extension = file["extension"].as_str().map(|e| e.trim_start_matches('.').to_lowercase())
+            let extension = file["extension"].as_str()
+                .map(|e| e.trim_start_matches('.').to_lowercase())
+                .filter(|e| !e.is_empty())
                 .or_else(|| Path::new(&filename.replace('\\', "/")).extension().map(|e| e.to_string_lossy().to_lowercase()))
                 .unwrap_or_default();
             let Some(score) = quality(file, &extension) else { continue };
@@ -670,6 +672,33 @@ mod tests {
             peer("nolength", true, 0, vec![json!({"filename": r"@@n\Lizzy Ashliegh - Remedy.flac", "extension": "flac"})]),
         ]);
         let ranked = rank_files(&meta(), &responses);
+        let users: Vec<_> = ranked.iter().map(|p| p.username.as_str()).collect();
+        assert_eq!(users, ["flacpeer", "mp3peer"]);
+        assert_eq!(ranked[0].extension, "flac");
+    }
+
+    #[test]
+    fn accepts_audio_when_soulseek_reports_an_empty_extension() {
+        let track = TrackMeta {
+            name: "Never Gonna Give You Up".into(),
+            artists: vec!["Rick Astley".into()],
+            duration_secs: 213.573,
+        };
+        let responses = json!([
+            peer("flacpeer", true, 0, vec![
+                json!({"filename": r"shared\Rick Astley - Never Gonna Give You Up.flac",
+                    "extension": "", "length": 213, "size": 28_608_349}),
+            ]),
+            peer("mp3peer", true, 0, vec![
+                json!({"filename": r"music\Rick Astley\Never Gonna Give You Up.mp3",
+                    "extension": "", "length": 213, "bitRate": 320, "isVariableBitRate": false, "size": 8_500_000}),
+            ]),
+            peer("other", true, 0, vec![
+                json!({"filename": r"music\Rick Astley\Never Gonna Give You Up (Live).flac",
+                    "extension": "", "length": 213, "size": 29_000_000}),
+            ]),
+        ]);
+        let ranked = rank_files(&track, &responses);
         let users: Vec<_> = ranked.iter().map(|p| p.username.as_str()).collect();
         assert_eq!(users, ["flacpeer", "mp3peer"]);
         assert_eq!(ranked[0].extension, "flac");
