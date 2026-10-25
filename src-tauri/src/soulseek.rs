@@ -24,7 +24,7 @@ const MAX_ATTEMPTS: usize = 3;
 const SEARCH_PLATEAU: Duration = Duration::from_secs(3);
 const SEARCH_LIMIT: Duration = Duration::from_secs(20);
 const SEARCH_FINALIZE_LIMIT: Duration = Duration::from_secs(10);
-const SEARCH_REQUEST_LIMIT: Duration = Duration::from_secs(3);
+const SEARCH_REQUEST_LIMIT: Duration = Duration::from_secs(10);
 /// Peers often queue requests behind other users; don't wait forever for one.
 const QUEUE_PATIENCE: Duration = Duration::from_secs(60);
 const STALL_LIMIT: Duration = Duration::from_secs(60);
@@ -446,7 +446,17 @@ pub async fn download(
     let mut stopped = false;
     let response_count = loop {
         touch(port).await;
-        let state = search_state(&client, &search_url).await?;
+        // A freshly started slskd can stall single requests while it warms up;
+        // keep polling until the search's own ceiling instead of failing the source.
+        let state = match search_state(&client, &search_url).await {
+            Ok(state) => state,
+            Err(e) if started.elapsed() < SEARCH_LIMIT + SEARCH_FINALIZE_LIMIT => {
+                eprintln!("slskd search poll failed, retrying: {e}");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         let now = Instant::now();
         let action = search_action(&state, started, now, &mut plateau, stopped)?;
         if action == SearchAction::Finished { break state["responseCount"].as_u64().unwrap(); }
